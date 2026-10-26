@@ -1,0 +1,64 @@
+# ============================================================================
+# joint_limits.yaml -- safety limits for the LeKiwi robot
+#
+# Two consumers read these values:
+#   1. lekIwi_base_controller / lekIwi_teleop (ROS 2 parameters, via launch)
+#   2. the <ros2_control> block of urdf/lekIwi_control.urdf.xacro
+#      (enforced in C++ by lekIwi_isaac_hardware/LekIwiIsaacSystem)
+#
+# Keep (1) and (2) in sync.  Values are exported as ROS 2 parameters under the
+# top-level key `joint_limits` so they can be loaded directly in a launch file:
+#     parameters=[joint_limits_yaml]
+# ============================================================================
+
+joint_limits:
+  use_sim_time: false
+
+  # ---------------------------------------------------------------------
+  # Mobile base (3 omni wheels, radius measured from the wheel STL: 50.78 mm)
+  # ---------------------------------------------------------------------
+  wheel_radius: 0.0507845          # [m]  half of the 101.569 mm STL diameter
+  base_radius: 0.106135            # [m]  mean distance base origin -> wheel centre
+  max_linear_velocity: 0.50        # [m/s]
+  max_angular_velocity: 1.50       # [rad/s]
+  max_wheel_velocity: 30.0         # [rad/s]  (~1.52 m/s at the wheel rim)
+
+  # ---------------------------------------------------------------------
+  # Mobile base safety
+  # ---------------------------------------------------------------------
+  linear_accel_limit: 1.00         # [m/s^2]   slew-rate limit on vx / vy
+  angular_accel_limit: 3.00        # [rad/s^2] slew-rate limit on wz
+  cmd_vel_timeout: 0.50            # [s]       stop the base if /cmd_vel goes quiet
+
+  # ---------------------------------------------------------------------
+  # Arm (6 joints)
+  #
+  # The source URDF declares every arm joint as "continuous" WITHOUT any
+  # <limit>, so no authoritative limits exist.  These are conservative
+  # simulation limits -- CALIBRATE THEM AGAINST THE REAL STS3215 SERVOS.
+  # ---------------------------------------------------------------------
+  max_arm_velocity: 1.50           # [rad/s]
+  max_arm_acceleration: 4.00       # [rad/s^2]
+
+  arm_joint_names:
+    - STS3215_03a_v1_Revolute_45
+    - STS3215_03a_v1_1_Revolute_49
+    - STS3215_03a_v1_2_Revolute_51
+    - STS3215_03a_v1_3_Revolute_53
+    - STS3215_03a_Wrist_Roll_v1_Revolute_55
+    - STS3215_03a_v1_4_Revolute_57
+
+  arm_position_min:  [-3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265, -1.57079633]
+  arm_position_max:  [ 3.14159265,  3.14159265,  3.14159265,  3.14159265,  3.14159265,  1.57079633]
+
+  # "Reset" (R key) pose.  All zeros == the URDF reference configuration.
+  arm_home_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+  # Per-joint teleoperation step used by lekIwi_teleop [rad]
+  arm_step: 0.05
+
+  # Wheel joint names (order matters: it is the order published to Isaac Sim)
+  wheel_joint_names:
+    - ST3215_Servo_Motor_v1_2_Revolute_60
+    - ST3215_Servo_Motor_v1_1_Revolute_62
+    - ST3215_Servo_Motor_v1_Revolute_64

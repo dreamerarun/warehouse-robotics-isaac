@@ -1,0 +1,27 @@
+# ROS 2 / colcon generated output
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python cache and packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Isaac Sim / Omniverse local caches and crash dumps
+.cache/
+*.usd~
+*.tmp
+*.log
+core
+core.*

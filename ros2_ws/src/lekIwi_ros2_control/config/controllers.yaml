@@ -1,0 +1,125 @@
+# ============================================================================
+# controllers.yaml  --  ROS 2 Humble / ros2_control controller configuration
+#
+# Loaded by:
+#   * /controller_manager          (ros2_control_node, from control.launch.py)
+#   * spawner processes            (same file, to read the controller types)
+#
+# Architecture (Isaac Sim 5.1 has NO built-in ros2_control plugin, so a bridge
+# hardware interface was written: lekIwi_isaac_hardware/LekIwiIsaacSystem)
+#
+#   /cmd_vel  ->  lekIwi_base_controller (Python: IK + safety)
+#                    -> /base_controller/commands (Float64MultiArray)
+#   controller_manager
+#       |-- base_controller : forward_command_controller (velocity, 3 wheels)
+#       |-- arm_controller  : joint_trajectory_controller (position, 6 joints)
+#       |-- joint_state_broadcaster -> /joint_states
+#                |
+#      LekIwiIsaacSystem (C++) --ROS 2 topics--> Isaac Sim OmniGraph
+#                |                                -> IsaacArticulationController
+#                '-- /lekIwi/joint_states_isaac <--'    -> /World/LeKiwi
+# ============================================================================
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100            # Hz
+
+    # NOTE: use_sim_time is deliberately false for controller_manager.
+    # Isaac Sim publishes /clock; if the simulation is paused the clock stops
+    # and the control loop period would collapse to 0.  Wall-clock timing keeps
+    # the controller_manager loop healthy.  Set true via launch argument if you
+    # want strictly simulation-synchronised controllers.
+    use_sim_time: false
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    base_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# ----------------------------------------------------------------------------
+# joint_state_broadcaster : republishes the LeKiwi state coming back from
+# Isaac Sim as /joint_states using the real URDF joint names.
+# ----------------------------------------------------------------------------
+joint_state_broadcaster:
+  ros__parameters:
+    joints:
+      # --- drive wheels ---
+      - ST3215_Servo_Motor_v1_2_Revolute_60
+      - ST3215_Servo_Motor_v1_1_Revolute_62
+      - ST3215_Servo_Motor_v1_Revolute_64
+      # --- arm ---
+      - STS3215_03a_v1_Revolute_45
+      - STS3215_03a_v1_1_Revolute_49
+      - STS3215_03a_v1_2_Revolute_51
+      - STS3215_03a_v1_3_Revolute_53
+      - STS3215_03a_Wrist_Roll_v1_Revolute_55
+      - STS3215_03a_v1_4_Revolute_57
+    interfaces:
+      - position
+      - velocity
+    publish_rate: 50.0
+    # publish on the global /joint_states topic
+    use_local_topics: false
+
+# ----------------------------------------------------------------------------
+# arm_controller : trajectory control of the 6 LeKiwi arm joints.
+# Provides BOTH:
+#   * action  : /arm_controller/follow_joint_trajectory   (control_msgs)
+#   * topic   : /arm_controller/joint_trajectory          (trajectory_msgs)
+# ----------------------------------------------------------------------------
+arm_controller:
+  ros__parameters:
+    joints:
+      - STS3215_03a_v1_Revolute_45
+      - STS3215_03a_v1_1_Revolute_49
+      - STS3215_03a_v1_2_Revolute_51
+      - STS3215_03a_v1_3_Revolute_53
+      - STS3215_03a_Wrist_Roll_v1_Revolute_55
+      - STS3215_03a_v1_4_Revolute_57
+
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    open_loop_control: false
+    allow_integration_in_goal_trajectories: true
+    # trajectories must finish at rest (silences the Humble deprecation
+    # warning and is the safer semantic for a manipulator)
+    allow_nonzero_velocity_at_trajectory_end: false
+
+    constraints:
+      stopped_velocity_tolerance: 0.05
+      goal_time: 2.0
+      STS3215_03a_v1_Revolute_45:        {trajectory: 1.0, goal: 0.10}
+      STS3215_03a_v1_1_Revolute_49:      {trajectory: 1.0, goal: 0.10}
+      STS3215_03a_v1_2_Revolute_51:      {trajectory: 1.0, goal: 0.10}
+      STS3215_03a_v1_3_Revolute_53:      {trajectory: 1.0, goal: 0.10}
+      STS3215_03a_Wrist_Roll_v1_Revolute_55: {trajectory: 1.0, goal: 0.10}
+      STS3215_03a_v1_4_Revolute_57:      {trajectory: 1.0, goal: 0.10}
+
+# ----------------------------------------------------------------------------
+# base_controller : forwards raw per-wheel velocity commands.
+#
+# It is NOT a diff-drive/mecanum controller: the LeKiwi has THREE
+# omni-directional wheels at 120 deg, so the [vx, vy, wz] -> wheel-rate
+# inverse kinematics lives in the ROS 2 node `lekIwi_base_controller`, which
+# publishes Float64MultiArray on /base_controller/commands.
+# ----------------------------------------------------------------------------
+base_controller:
+  ros__parameters:
+    joints:
+      - ST3215_Servo_Motor_v1_2_Revolute_60
+      - ST3215_Servo_Motor_v1_1_Revolute_62
+      - ST3215_Servo_Motor_v1_Revolute_64
+    # forward_command_controller (Humble) takes a SINGLE interface name;
+    # it is spelled `interface_name`, not `command_interfaces`.
+    interface_name: velocity

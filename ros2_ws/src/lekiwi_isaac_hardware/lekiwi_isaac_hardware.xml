@@ -1,0 +1,16 @@
+<library path="lekiwi_isaac_hardware">
+
+  <class name="lekiwi_isaac_hardware/LekIwiIsaacSystem"
+         type="lekiwi_isaac_hardware::LekIwiIsaacSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Bridges the LeKiwi ros2_control controller_manager to NVIDIA Isaac Sim
+      5.1. State is read from sensor_msgs/JointState published by the
+      isaacsim.ros2.bridge ROS2PublishJointState OmniGraph node, and velocity
+      (wheels) / position (arm) commands are published as sensor_msgs/JointState
+      for the isaacsim.ros2.bridge ROS2SubscribeJointState node, which feeds the
+      isaacsim.core.nodes.IsaacArticulationController driving /World/LeKiwi.
+    </description>
+  </class>
+
+</library>

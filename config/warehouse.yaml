@@ -1,0 +1,240 @@
+# =============================================================================
+# Warehouse Robotics - single source of truth
+# =============================================================================
+# Both the Isaac Sim scene (scripts/warehouse_sim.py) and every ROS 2 node in
+# ros2_ws/src/warehouse_fleet read THIS file, so the simulated world and the
+# autonomy stack can never silently disagree about geometry or task locations.
+#
+# Coordinate convention: metres, +X east, +Y north, +Z up, yaw CCW about +Z.
+# =============================================================================
+
+world:
+  bounds: {x_min: -10.0, x_max: 10.0, y_min: -7.0, y_max: 7.0}
+  floor_thickness: 0.10
+  wall_height: 3.0
+  wall_thickness: 0.20
+  physics_dt: 0.005          # 200 Hz (the H1 locomotion policy requires 200 Hz)
+  rendering_dt: 0.0333333    # 30 Hz
+  ros_domain_id: 0
+  # Headless / real-time pacing defaults (overridable from the CLI)
+  realtime: true
+
+scene:
+  # Decorative but collidable pallets / crates.  The fleet planner inflates
+  # every rectangle below by the robot radius.
+  pallets:
+    - {name: pallet_west, x: -8.6, y: 4.4, yaw: 0.0, size: [1.2, 1.0, 0.15]}
+    - {name: pallet_north, x: 0.5, y: 6.2, yaw: 0.1, size: [1.2, 1.0, 0.15]}
+    - {name: pallet_east, x: 8.4, y: 1.6, yaw: -0.3, size: [1.2, 1.0, 0.15]}
+    # Empty outfeed pallet for the UR10 palletising cell.  It is kept low
+    # (no cargo collider) so the arm can stack totes on it.
+    - {name: pallet_robot, x: 4.6, y: 2.3, yaw: 0.0, size: [1.2, 1.0, 0.15], empty: true}
+
+  # Rack rows.  Four full-size NVIDIA racks leave a 2.8 m cross aisle at
+  # x=-3.8 (the forklift lane) and a 2.25 m aisle between the two rows.
+  racks:
+    - {name: rack_a1, x: -6.8, y: -4.0, yaw: 0.0, size: [3.2, 1.35, 2.0]}
+    - {name: rack_a2, x: -0.8, y: -4.0, yaw: 0.0, size: [3.2, 1.35, 2.0]}
+    - {name: rack_b1, x: -6.8, y: -0.4, yaw: 0.0, size: [3.2, 1.35, 2.0]}
+    - {name: rack_b2, x: -0.8, y: -0.4, yaw: 0.0, size: [3.2, 1.35, 2.0]}
+
+  # Conveyors behind the three AMR stations and the two humanoid handoff
+  # stations.  Each one also appears as a static_obstacle so the planner and
+  # the physical collider match the NVIDIA mesh exactly.
+  conveyors:
+    - {name: conveyor_inbound,  x: -7.5, y: 3.0, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: conveyor_outbound, x: -1.6, y: 3.0, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: conveyor_staging,  x:  2.5, y: 3.0, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: humanoid_conveyor_pickup,  x: -1.0, y: 4.9, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: humanoid_conveyor_dropoff, x:  6.8, y: 4.9, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+
+  # Dynamic forklift: NVIDIA asset, kinematic, deterministic route.  It
+  # crosses the station aisle through the rack cross-aisle at x=-3.8.
+  forklift:
+    enabled: true
+    name: forklift
+    lane_x: -3.8
+    y_min: -4.8
+    y_max: -0.9
+    speed: 0.40
+    pause: 2.5
+    # Conservative stop envelope.  The forklift is kinematic, so it must
+    # never move into an AMR; it holds until the whole envelope is clear.
+    safety_radius: 2.60
+    # Planner-only aisle reservation: AMRs stay out of the forklift's narrow
+    # cross-aisle and use the open north/south corridors instead.
+    block_amrs: true
+    planner_width: 2.40
+
+  # Industrial palletising cell.  The UR10 stands east of the staging
+  # conveyor, picks a tote from the belt and stacks it on the empty pallet.
+  # The arm is simulated locally (RMPflow pick-place); its joint states are
+  # published on /ur10/joint_states.
+  industrial:
+    enabled: true
+    name: ur10
+    base: {x: 4.20, y: 3.00, z: 0.90, yaw: 3.14159265}
+    initial_height: 1.45
+    pick:  {x: 3.35, y: 3.00, z: 0.909}
+    place: {x: 4.60, y: 2.30, z: 0.29}
+    tote_size: [0.42, 0.32, 0.28]
+    stack_size: 3
+    stack_step: 0.30
+    dwell: 2.5
+    reset_delay: 4.0
+
+  # Static "keep-out" boxes that are not racks (Franka table, charging bank,
+  # conveyors).  Every rectangle is inflated by the fleet planner.
+  static_obstacles:
+    - {name: franka_table, x: 7.00, y: -4.50, yaw: 0.0, size: [0.90, 1.10, 0.42]}
+    - {name: charging_bank, x: -7.5, y: -6.65, yaw: 0.0, size: [4.8, 0.25, 0.90]}
+    # Pedestal for the UR10 palletising arm (east end of the staging line).
+    - {name: ur10_pedestal, x: 4.20, y: 3.00, yaw: 0.0, size: [0.60, 0.60, 0.90]}
+    - {name: ur10_output_pallet, x: 4.60, y: 2.30, yaw: 0.0, size: [1.20, 1.00, 0.15]}
+    - {name: conveyor_inbound,  x: -7.5, y: 3.0, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: conveyor_outbound, x: -1.6, y: 3.0, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: conveyor_staging,  x:  2.5, y: 3.0, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: humanoid_conveyor_pickup,  x: -1.0, y: 4.9, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+    - {name: humanoid_conveyor_dropoff, x:  6.8, y: 4.9, yaw: 0.0, size: [2.4, 0.8, 1.166]}
+
+  # Floor pads.  `kind` is informational (pickup / dropoff / charging / dock).
+  stations:
+    - {name: inbound,  x: -7.5, y: 1.50, yaw: 0.0, kind: pickup,   color: [0.10, 0.85, 0.30]}
+    - {name: staging,  x:  2.5, y: 1.50, yaw: 0.0, kind: dropoff,  color: [0.15, 0.55, 1.00]}
+    - {name: outbound, x: -2.0, y: 1.50, yaw: 0.0, kind: dropoff,  color: [1.00, 0.55, 0.10]}
+    - {name: arm_dock, x:  5.4, y: -4.50, yaw: 0.0, kind: dock,    color: [0.10, 0.72, 0.72]}
+
+  # Idle AMRs retreat here after finishing a task so they never block a
+  # station that another robot needs.  Index maps to amrs[] order.
+  parking:
+    - {name: park1, x: 1.0, y: -6.0, yaw: 0.0}
+    - {name: park2, x: 3.0, y: -6.0, yaw: 0.0}
+    - {name: park3, x: 5.0, y: -6.0, yaw: 0.0}
+
+# -----------------------------------------------------------------------------
+# Autonomous mobile robots (Nova Carter, differential drive, 2-D LiDAR)
+# -----------------------------------------------------------------------------
+amrs:
+  - name: amr1
+    spawn: {x: 1.0, y: -6.0, yaw: 0.0}
+    right_of_way: 1
+    max_speed: 0.65
+    lidar_mount: [-0.06, 0.0, 0.38]
+  - name: amr2
+    spawn: {x: 3.0, y: -6.0, yaw: 0.0}
+    right_of_way: 2
+    max_speed: 0.65
+    lidar_mount: [-0.06, 0.0, 0.38]
+  - name: amr3
+    spawn: {x: 5.0, y: -6.0, yaw: 0.0}
+    right_of_way: 3
+    max_speed: 0.65
+    lidar_mount: [-0.06, 0.0, 0.38]
+
+# -----------------------------------------------------------------------------
+# Franka Panda pick-and-place cell
+# -----------------------------------------------------------------------------
+# The joint waypoints below were solved with Lula IK for this exact base pose
+# and are streamed by the ROS 2 node as sensor_msgs/JointState.  `gripper` is
+# the finger joint target (0.0 closed, 0.04 open).
+franka:
+  enabled: true
+  base: {x: 7.5, y: -4.5, z: 0.0, yaw: 3.14159265}
+  eef_frame: panda_hand
+  joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4,
+                panda_joint5, panda_joint6, panda_joint7,
+                panda_finger_joint1, panda_finger_joint2]
+  # World positions used only by the simulator for cubes / tray spawn.
+  cubes:
+    - {name: cube_a, x: 7.05, y: -4.75, z: 0.47}
+    - {name: cube_b, x: 7.05, y: -4.25, z: 0.47}
+  cube_size: 0.05
+  tray: {x: 6.88, y: -4.50, z: 0.435, size: [0.34, 0.34, 0.02]}
+  waypoints:
+    home:       {joints: [ 0.0054, -0.6141, -0.0028, -1.8076, -0.0020, 1.1941, 0.7880], gripper: 0.04}
+    above_a:    {joints: [-0.0571, -0.0622,  0.5348, -1.4321,  0.0322, 1.3779, 1.2673], gripper: 0.04}
+    pick_a:     {joints: [-0.0676, -0.1661,  0.5405, -2.0518,  0.0898, 1.9085, 1.2218], gripper: 0.04}
+    above_tray: {joints: [-0.0264,  0.4365,  0.0474, -0.7440, -0.0220, 1.1803, 0.7947], gripper: 0.04}
+    place:      {joints: [-0.0395,  0.1851,  0.0437, -1.6013, -0.0077, 1.7866, 0.7913], gripper: 0.04}
+    above_b:    {joints: [-0.0223, -0.0597, -0.4601, -1.4324, -0.0275, 1.3784, 0.2997], gripper: 0.04}
+    pick_b:     {joints: [-0.0132, -0.1590, -0.4654, -2.0522, -0.0751, 1.9099, 0.3373], gripper: 0.04}
+  sequence:
+    - {waypoint: home,       gripper: 0.04, dwell: 1.0, label: "home"}
+    - {waypoint: above_a,    gripper: 0.04, dwell: 0.3, label: "approach cube A"}
+    - {waypoint: pick_a,     gripper: 0.04, dwell: 0.4, label: "grasp cube A"}
+    - {waypoint: pick_a,     gripper: 0.00, dwell: 0.8, label: "close gripper A"}
+    - {waypoint: above_a,    gripper: 0.00, dwell: 0.4, label: "lift cube A"}
+    - {waypoint: above_tray, gripper: 0.00, dwell: 0.4, label: "carry cube A"}
+    - {waypoint: place,      gripper: 0.00, dwell: 0.4, label: "lower cube A"}
+    - {waypoint: place,      gripper: 0.04, dwell: 0.8, label: "release cube A"}
+    - {waypoint: above_tray, gripper: 0.04, dwell: 0.4, label: "retreat"}
+    - {waypoint: above_b,    gripper: 0.04, dwell: 0.3, label: "approach cube B"}
+    - {waypoint: pick_b,     gripper: 0.04, dwell: 0.4, label: "grasp cube B"}
+    - {waypoint: pick_b,     gripper: 0.00, dwell: 0.8, label: "close gripper B"}
+    - {waypoint: above_b,    gripper: 0.00, dwell: 0.4, label: "lift cube B"}
+    - {waypoint: above_tray, gripper: 0.00, dwell: 0.4, label: "carry cube B"}
+    - {waypoint: place,      gripper: 0.00, dwell: 0.4, label: "lower cube B"}
+    - {waypoint: place,      gripper: 0.04, dwell: 0.8, label: "release cube B"}
+    - {waypoint: above_tray, gripper: 0.04, dwell: 0.4, label: "retreat"}
+    - {waypoint: home,       gripper: 0.04, dwell: 2.0, label: "home"}
+  # Teleport the cubes back to their pick spots after both have been placed
+  # and the gripper has been open for this many seconds (endless demo).
+  reset_after: 6.0
+
+# -----------------------------------------------------------------------------
+# Unitree H1 humanoid (Isaac Sim flat-terrain walking policy)
+# -----------------------------------------------------------------------------
+humanoid:
+  enabled: true
+  name: humanoid
+  spawn: {x: 4.0, y: 3.95, yaw: 3.14159}  # westbound in the handoff lane
+  # Material-handling task: carry a tote from the receiving conveyor to the
+  # packing conveyor.  The simulator shows the tote in the H1's arms and
+  # places it on the dropoff conveyor.
+  task:
+    pickup: {x: -1.0, y: 3.95, yaw: 1.5708}
+    dropoff: {x: 6.8, y: 3.95, yaw: 1.5708}
+    home: {x: 4.0, y: 3.95, yaw: 3.14159}
+    load_time: 3.0
+    unload_time: 3.0
+  # Fallback route if `task` is absent.
+  patrol:
+    - {x: 2.5, y: 5.4}
+    - {x: 6.0, y: 5.4}
+    - {x: 6.0, y: 3.2}
+    - {x: 2.5, y: 3.2}
+  speed: 0.55
+  turn_gain: 1.4
+  waypoint_tolerance: 0.25
+
+# -----------------------------------------------------------------------------
+# Work queue.  `loop: true` re-queues every task once all are complete.
+# -----------------------------------------------------------------------------
+tasks:
+  loop: true
+  list:
+    - {id: T1, pickup: inbound,  dropoff: staging,  priority: 1}
+    - {id: T2, pickup: staging,  dropoff: outbound, priority: 2}
+    - {id: T3, pickup: inbound,  dropoff: outbound, priority: 3}
+    - {id: T4, pickup: outbound, dropoff: staging,  priority: 4}
+    - {id: T5, pickup: staging,  dropoff: arm_dock, priority: 5}
+    - {id: T6, pickup: arm_dock, dropoff: inbound,  priority: 6}
+
+fleet:
+  map_resolution: 0.10          # metres per cell
+  inflation_radius: 0.90        # robot radius + corner-cutting margin
+  replan_period: 2.0            # seconds
+  pickup_dwell: 2.5             # seconds at a pickup pad
+  dropoff_dwell: 2.5            # seconds at a dropoff pad
+  arrival_tolerance: 0.35       # metres
+  station_claim_radius: 1.4     # claim a free pad only when close
+  station_wait_distance: 2.0    # spacious departure lane for the owner
+  hold_distance: 1.40           # begin yielding inside this clearance
+  release_distance: 2.10        # release a yield outside this clearance
+  max_hold_time: 4.5            # deadlock guard: swap priority after this
+  max_active_amrs: 1            # one task-running AMR in the narrow aisle
+  status_period: 1.0
+  scan_safety_stop: 0.55        # metres in the forward cone
+  scan_safety_slow: 1.30
+  scan_safety_side: 0.0         # optional 360-degree stop; off (LiDAR self-hits)
+  path_lookahead: 0.45
