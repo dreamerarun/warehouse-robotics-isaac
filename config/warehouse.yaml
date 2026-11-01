@@ -208,6 +208,70 @@ humanoid:
   waypoint_tolerance: 0.25
 
 # -----------------------------------------------------------------------------
+# NVIDIA People dynamic crew (omni.anim.people + omni.anim.navigation)
+# -----------------------------------------------------------------------------
+people:
+  enabled: true
+  character_root: /World/People
+  animation_graph: Isaac/People/Characters/Biped_Setup.usd
+  graph_root: /World/Characters/Biped_Setup
+  number_of_loop: inf
+  agent_radius: 0.35
+  dynamic_avoidance: true
+  navmesh:
+    enabled: true
+    final_target_distance: 0.25
+    settings:
+      agent_max_floor_slope: 45.0
+      agent_max_step_height: 40.0
+      agent_min_height: 100.0
+  workers:
+    - name: Worker1
+      role: inbound receiving clerk
+      asset: Isaac/People/Characters/male_adult_construction_01_new/male_adult_construction_01_new.usd
+      start: {x: -9.0, y: 5.8, yaw: 0.0}
+      route:
+        - {x: -4.6, y: 5.8}
+        - {x: -4.6, y: 2.2, idle: 2.0}
+        - {x: -4.6, y: 5.8}
+        - {x: -9.0, y: 5.8}
+    - name: Worker2
+      role: forklift spotter
+      asset: Isaac/People/Characters/male_adult_construction_03/male_adult_construction_03.usd
+      start: {x: -2.8, y: 1.2, yaw: 180.0}
+      route:
+        - {x: 1.2, y: 1.2}
+        - {x: 1.2, y: -2.2, idle: 2.0}
+        - {x: 1.2, y: 1.2}
+        - {x: -2.8, y: 1.2}
+    - name: Worker3
+      role: packing-line supervisor
+      asset: Isaac/People/Characters/male_adult_construction_05_new/male_adult_construction_05_new.usd
+      start: {x: 3.2, y: 5.8, yaw: 180.0}
+      route:
+        - {x: 8.2, y: 5.8}
+        - {x: 8.2, y: 2.5, idle: 2.0}
+        - {x: 8.2, y: 5.8}
+        - {x: 3.2, y: 5.8}
+    - name: Worker4
+      role: robotics-cell technician
+      asset: Isaac/People/Characters/F_Business_02/F_Business_02.usd
+      start: {x: 8.2, y: -2.0, yaw: 180.0}
+      route:
+        - {x: 8.2, y: -2.0}
+        - {x: 8.2, y: -3.4, look_around: 2.0}
+        - {x: 8.2, y: -2.0}
+    - name: Worker5
+      role: west-aisle picker
+      asset: Isaac/People/Characters/male_adult_construction_01_new/male_adult_construction_01_new.usd
+      start: {x: -9.1, y: -2.2, yaw: 0.0}
+      route:
+        - {x: -5.7, y: -2.2, idle: 2.0}
+        - {x: -9.1, y: -2.2}
+        - {x: -9.1, y: -5.7, look_around: 2.0}
+        - {x: -9.1, y: -2.2}
+
+# -----------------------------------------------------------------------------
 # Work queue.  `loop: true` re-queues every task once all are complete.
 # -----------------------------------------------------------------------------
 tasks:

@@ -44,7 +44,8 @@ scene and the planner geometry cannot silently disagree.
 | **1 × UR10** | Conveyor palletising | Picks a tote from the staging belt roller surface, stacks it on an output pallet |
 | **1 × Unitree H1** | Humanoid material handling | Carries totes from a receiving conveyor to a packing conveyor |
 | **1 × forklift** | Dynamic obstacle | Kinematic route through the rack cross-aisle; yields to AMRs |
-| **NVIDIA SimReady props** | Set dressing | Racks, stock, totes, pallets, conveyors, workers, safety equipment, and more |
+| **NVIDIA SimReady props** | Set dressing | Racks, stock, totes, pallets, conveyors, safety equipment, and visual props |
+| **NVIDIA People crew** | Human motion | Animated workers follow A*-planned routes, with idle and look-around behaviours |
 
 The current build deliberately keeps the process **visible and deterministic**:
 
@@ -55,6 +56,8 @@ The current build deliberately keeps the process **visible and deterministic**:
 - AMRs show a carried tote only while travelling.
 - The forklift and AMR planner share a keep-out aisle, so the forklift cannot
   drive into a moving robot.
+- The NVIDIA People workers move through the baked NavMesh; the AMR planner
+  treats them as dynamic obstacles.
 
 The scene is 20 m × 14 m. The fleet runs six transport tasks by default and
 repeats the queue when `tasks.loop` is true.
@@ -212,6 +215,18 @@ This builds the world, loads the robots, and exits after 20 simulated seconds.
 It does not start the fleet manager. Look for the scene startup messages and no
 fatal asset errors.
 
+To smoke test the animated People crew and the baked NavMesh separately:
+
+```bash
+scripts/run_sim.sh --headless --nvidia-assets --people --no-ros --duration 20
+```
+
+The `--nvidia-assets` flag is required in headless mode because the People
+crew resolves its character assets and obstacle geometry from the NVIDIA asset
+layer. The HUD/status should eventually show `people=5 agents navmesh=ok`.
+If the NavMesh bake fails, the worker command loop cannot plan routes and the
+agents stay parked.
+
 Then test the full stack:
 
 ```bash
@@ -244,6 +259,10 @@ scripts/run_demo.sh
 The viewport shows the complete warehouse process. The demo starts with the
 `overview` camera. Use the mouse to orbit, pan, and zoom as usual.
 
+The animated NVIDIA People crew is part of the default visual run. Workers
+follow the routes from `config/warehouse.yaml` through the Isaac Sim People
+command layer and the baked navigation mesh.
+
 ### Camera presets
 
 ```bash
@@ -259,8 +278,8 @@ scripts/run_demo.sh --camera h1 --no-hud
 | `h1` | Close-up of the humanoid conveyor handoff |
 
 Reference captures are in `screenshots/`. The HUD reports AMR poses, Franka and
-UR10 state, H1 position, forklift position, simulation time, and the number of
-ROS graphs.
+UR10 state, H1 position, forklift position, People agent poses, simulation
+time, and the number of ROS graphs.
 
 ### Simulation only and autonomy only
 
@@ -291,6 +310,8 @@ scripts/run_demo.sh --headless --domain-id 7
 scripts/run_demo.sh --camera ur10 --nvidia-assets --no-hud
 scripts/run_autonomy.sh robots:=amr1,amr2 franka:=false
 scripts/run_demo.sh -- rviz:=true monitor:=false
+scripts/run_demo.sh --headless --nvidia-assets --people --duration 60
+scripts/run_demo.sh --no-people --duration 60
 ```
 
 ### `run_demo.sh` options
@@ -301,6 +322,8 @@ scripts/run_demo.sh -- rviz:=true monitor:=false
 | `--duration SECONDS` | Stop after N simulated seconds; useful for CI |
 | `--camera {overview,ur10,h1}` | Start the viewport at a named preset |
 | `--no-hud` | Hide the viewport status overlay |
+| `--people` | Enable the NVIDIA People dynamic crew and baked NavMesh |
+| `--no-people` | Disable the NVIDIA People dynamic crew and baked NavMesh |
 | `--no-franka` | Do not create or control the Franka cell |
 | `--no-humanoid` | Do not create or control the H1 |
 | `--no-industrial` | Skip the UR10 palletising cell |
@@ -421,6 +444,32 @@ swept corridor or beside the mast. The fleet planner treats the forklift aisle
 as a no-go region for AMRs, so AMRs route through the north/south corridors
 instead of competing with it head-on.
 
+### People crew
+
+The demo ships five animated workers from NVIDIA’s character content. They do
+not use custom procedural walking; their motion comes from the Isaac Sim People
+behaviour, the `Biped_Setup` animation graph, and the navigation stack.
+
+Worker behaviour is driven by YAML routes:
+
+```yaml
+people:
+  enabled: true
+  number_of_loop: inf
+```
+
+The `people.workers` list supplies the worker names, character assets, spawn
+poses, movement routes, and idle/look-around actions. The exact coordinates and
+dwell times live in `config/warehouse.yaml`.
+
+The runtime generates the `GoTo` / `Idle` / `LookAround` command file, and the
+NavMesh drives the planned paths.
+
+You can watch the crew in the visual viewport or through the simulator status.
+The status line reports `people=<n> agents navmesh=<ok|FAIL>` plus each worker’s
+position. If the NavMesh reports `FAIL`, worker commands are not accepted and
+the crew remains parked.
+
 ---
 
 ## Architecture
@@ -433,6 +482,7 @@ instead of competing with it head-on.
 │  warehouse_scene.py      floor, walls, racks, materials      │
 │  warehouse_robots.py     Carter, Franka, Forklift, H1        │
 │  warehouse_nvidia.py     SimReady asset fitting              │
+│  warehouse_people.py     People crew + baked NavMesh        │
 │  warehouse_process.py    conveyors, UR10, payload visuals    │
 │  warehouse_ros2.py       OmniGraph action graphs             │
 │                                                              │
@@ -482,6 +532,7 @@ warehouse_robotics_isaac/
 │   └── warehouse.yaml              # scene + fleet single source of truth
 ├── assets/
 │   ├── README.md
+│   ├── warehouse_start.usda       # minimal template stage opened by People
 │   └── lekiwi/                     # optional older LeKiwi assets
 ├── screenshots/
 │   ├── warehouse_overview.png
@@ -491,6 +542,7 @@ warehouse_robotics_isaac/
 │   ├── warehouse_scene.py          # floor, walls, racks, lights, materials
 │   ├── warehouse_robots.py         # AMR, Franka, Forklift, H1 adapters
 │   ├── warehouse_nvidia.py         # NVIDIA SimReady assets and fitting
+│   ├── warehouse_people.py         # People crew + NavMesh integration
 │   ├── warehouse_process.py        # conveyors, UR10, H1/AMR payload visuals
 │   ├── warehouse_ros2.py           # OmniGraph ROS 2 bridge
 │   ├── warehouse_ros_env.py        # bridge environment setup
@@ -531,6 +583,7 @@ time it is symlinked into the installed ROS package share.
 | `amrs` | AMR spawn, speed, right-of-way, LiDAR mount |
 | `franka` | Base pose, cubes, tray, joint waypoints, sequence |
 | `humanoid` | Spawn, material-handling pickup/drop-off, speed |
+| `people` | Animated crew, routes, command file, agent settings, NavMesh |
 | `tasks` | Work queue and loop behaviour |
 | `fleet` | Grid resolution, inflation, dwell, traffic tuning |
 
@@ -547,6 +600,32 @@ collision model read the YAML rectangles, not the mesh transforms.
 - The H1 walking policy requires the 200 Hz physics rate.
 - Conveyor roller surface: **0.769 m**.
 - UR10 output pallet top: **0.15 m**.
+
+### People crew and navigation
+
+The animated workforce is implemented with NVIDIA’s own motion stack:
+
+- `scripts/warehouse_people.py` enables the `omni.anim.*` extensions.
+- It opens `assets/warehouse_start.usda` through the Isaac Sim USD context.
+- It authors the shared `Biped_Setup` animation graph and attaches each worker
+  under `/World/People/WorkerN` as a dynamic character.
+- It bakes a NavMesh from the visible scene geometry and starts the Isaac Sim
+  People command loop.
+
+`config/warehouse.yaml` is the source of truth for the crew. It defines worker
+assets, spawn poses, routes, idle/look-around actions, agent radius, NavMesh
+settings, and the behaviour-loop duration.
+
+The generated People command file is written at runtime from the YAML worker
+routes and is passed to the Isaac Sim People behaviour. The command format is:
+
+```text
+WorkerN GoTo x y 0 yaw
+WorkerN Idle seconds
+WorkerN LookAround seconds
+```
+
+The default loop uses `inf` for repeated execution.
 
 ---
 
@@ -886,6 +965,28 @@ The default design intentionally runs one task-active AMR at a time:
 The reservation table is in memory. If an agent is killed mid-task, restart the
 autonomy stack; the manager will rebuild its reservations and requeue work.
 
+### Animated workers do not move
+
+The crew is driven by NVIDIA People, not by custom procedural walking.
+
+Check:
+
+```bash
+scripts/run_sim.sh --help
+scripts/run_demo.sh --help
+```
+
+- Use `--people` (default in visual mode) or `--no-people`.
+- Headless crew tests need `--nvidia-assets` because character assets and
+  obstacle geometry come from the NVIDIA layer.
+- Watch the status line for `people=<n> agents navmesh=ok`.
+- If `navmesh=FAIL`, the NavMesh bake did not complete; worker commands are not
+  accepted and the crew stays parked.
+- Check that the worker routes in `config/warehouse.yaml` are valid for the
+  current bounds and assets.
+- In the visual run, the workers should be visible under `/World/People` and
+  animated by the `Biped_Setup` graph.
+
 ### Franka does not move or drops cubes
 
 ```bash
@@ -939,6 +1040,11 @@ processes.
 - **No Nav2, SLAM, or map server.** The occupancy map is generated
   deterministically from the same YAML used to build the scene. This keeps the
   demo lightweight and repeatable.
+- **People motion uses Isaac Sim’s stack.** The animated workers come from
+  `omni.anim.people` plus the `Biped_Setup` animation graph and the baked
+  NavMesh. There is no custom procedural walker in the demo path. Robots treat
+  the workers as dynamic obstacles through the same dynamic exclusion used for
+  other moving equipment.
 - **AMR transport is logical.** The fleet tracks pickup/drop-off state and the
   simulator shows a payload while an AMR is in transit; the payload is not a
   separately scheduled physics object.

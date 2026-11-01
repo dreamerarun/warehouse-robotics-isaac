@@ -5,13 +5,17 @@ The navigation model stays authored in ``config/warehouse.yaml`` (simple
 rectangles) so the fleet planner and PhysX always agree.  This module only
 changes what the facility *looks* like and adds render-only set dressing:
 real NVIDIA warehouse racks and stock, concrete floor, wall panels, conveyors,
-pallets, safety equipment and workers.
+pallets, safety equipment and more.
 
 Every referenced asset has its own colliders disabled.  The frozen cube
 colliders authored by ``warehouse_scene.py`` remain the only physical scene
 geometry, apart from the dynamic forklift's own kinematic box.  That keeps
 LiDAR, A* and the safety gates unchanged while the camera sees a real
 industrial facility.
+
+The People crew (``scripts/warehouse_people.py``) drives the animated workers
+through Isaac Sim's own animation / navigation package; this module only
+provides the set dressing.
 
 The asset layer is also used for visuals parented to moving prims (the
 forklift and the H1 payload).  In that case the wrapper is authored under the
@@ -24,7 +28,7 @@ import math
 from collections import Counter
 
 import numpy as np
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdSkel
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from isaacsim.core.utils.stage import add_reference_to_stage
 
@@ -62,18 +66,6 @@ STOCK_USDS = (
 
 PAYLOAD_USD = DTW + "Storage/Boxes/Box_A/Box_A05_40x30x32cm_PR_V_NVD_01.usd"
 
-WORKER_USDS = (
-    "Isaac/People/Characters/male_adult_construction_01_new/"
-    "male_adult_construction_01_new.usd",
-    "Isaac/People/Characters/male_adult_construction_03/"
-    "male_adult_construction_03.usd",
-    "Isaac/People/Characters/male_adult_construction_05_new/"
-    "male_adult_construction_05_new.usd",
-    "Isaac/People/Characters/F_Business_02/F_Business_02.usd",
-    "Isaac/People/Characters/male_adult_construction_01_new/"
-    "male_adult_construction_01_new.usd",
-)
-
 PROP_ASSETS = {
     "crate": DTW + "Shipping/Wood_Crates/Standard_A/"
              "StandardWoodCrate_A19_80x80x80cm_PR_NV_01.usd",
@@ -99,33 +91,6 @@ PROPS = (
     ("cone", -2.7, 2.7, 0.0),
     ("trashcan", 9.3, 5.8, 0.0),
     ("pushcart", 3.2, 6.2, 0.0),
-)
-
-# (x, y, yaw, character index, frozen-pose index)
-WORKERS = (
-    (-8.9, 2.6, 90.0, 0, 0),    # inbound receiving clerk
-    (-4.9, 3.7, 90.0, 1, 3),    # forklift spotter, west of the lane
-    (4.1, 6.2, 180.0, 2, 1),    # packing-line supervisor
-    (8.9, -2.1, 180.0, 3, 4),   # robotics-cell technician
-    (-9.0, -2.3, 0.0, 4, 2),    # west-aisle picker
-)
-
-_POSE_CLIPS = (
-    ("Isaac/Environments/Outdoor/Rivermark/dsready_content/nv_content/"
-     "common_assets/animals/pedestrians/Reallusion/DanceCard_DS/"
-     "Relax_Idle_I_take_001.usd", 8.0, "idleA"),
-    ("Isaac/Environments/Outdoor/Rivermark/dsready_content/nv_content/"
-     "common_assets/animals/pedestrians/Reallusion/DanceCard_DS/"
-     "Relax_Idle_I_take_001.usd", 26.0, "idleB"),
-    ("Isaac/Environments/Outdoor/Rivermark/dsready_content/nv_content/"
-     "common_assets/animals/pedestrians/Reallusion/DanceCard_DS/"
-     "Relax_Idle_I_take_001.usd", 48.0, "idleC"),
-    ("Isaac/Environments/Outdoor/Rivermark/dsready_content/nv_content/"
-     "common_assets/animals/pedestrians/Reallusion/DanceCard_DS/"
-     "action_tie_shoes_standing_01.usda", 1.0, "stand"),
-    ("Isaac/Environments/Outdoor/Rivermark/dsready_content/nv_content/"
-     "common_assets/animals/pedestrians/Reallusion/DanceCard_DS/"
-     "action_picking_up_01.usda", 1.0, "lift"),
 )
 
 
@@ -340,107 +305,6 @@ class NvidiaAssetLayer:
         )
         return self.applied
 
-    # -- worker poses -----------------------------------------------------
-    def author_worker_poses(self, worker_paths):
-        """Freeze one RL-rig pose on each worker (render only)."""
-        char_joints = None
-        for path in worker_paths:
-            if path not in self.applied:
-                continue
-            root = self.stage.GetPrimAtPath(path + "/Asset")
-            if not root or not root.IsValid():
-                continue
-            for prim in Usd.PrimRange(root):
-                if prim.IsA(UsdSkel.Skeleton):
-                    char_joints = list(
-                        UsdSkel.Skeleton(prim).GetJointsAttr().Get() or []
-                    )
-                    break
-            if char_joints:
-                break
-        if not char_joints:
-            self.log("NVIDIA_WORKER_POSE: unavailable (no skeleton)")
-            return
-
-        scratch = "/World/_WorkerClip"
-        pose_of = {}
-        for i, (rel, frame, tag) in enumerate(_POSE_CLIPS):
-            url = self.assets_root + "/" + rel
-            if not self._exists(url):
-                self.log(f"NVIDIA_WORKER_CLIP_MISSING: {rel}")
-                continue
-            try:
-                self.stage.DefinePrim(scratch)
-                add_reference_to_stage(usd_path=url, prim_path=scratch)
-                prim = self.stage.GetPrimAtPath(scratch)
-                if not UsdSkel.IsSkelAnimationPrim(prim):
-                    self.log(f"NVIDIA_WORKER_CLIP_NOT_ANIM: {rel}")
-                    self.stage.RemovePrim(scratch)
-                    continue
-                src = UsdSkel.Animation(prim)
-                joints = list(src.GetJointsAttr().Get() or [])
-                norm = [
-                    ("RL_BoneRoot" + j[5:]) if j.startswith("_Root") else j
-                    for j in joints
-                ]
-                if norm != char_joints:
-                    self.log(
-                        f"NVIDIA_WORKER_CLIP_RIG_MISMATCH: {rel} "
-                        f"{len(joints)} vs {len(char_joints)}"
-                    )
-                    self.stage.RemovePrim(scratch)
-                    continue
-                tc = Usd.TimeCode(frame)
-                tr = src.GetTranslationsAttr()
-                ro = src.GetRotationsAttr()
-                sc = src.GetScalesAttr()
-                v_tr = tr.Get(tc) if tr is not None and tr.HasValue() else None
-                v_ro = ro.Get(tc) if ro is not None and ro.HasValue() else None
-                v_sc = sc.Get(tc) if sc is not None and sc.HasValue() else None
-                if v_tr is None or v_ro is None:
-                    self.stage.RemovePrim(scratch)
-                    continue
-                out = UsdSkel.Animation.Define(
-                    self.stage, f"/World/WorkerPose{i}"
-                )
-                out.CreateJointsAttr().Set(char_joints)
-                out.CreateTranslationsAttr().Set(v_tr)
-                out.CreateRotationsAttr().Set(v_ro)
-                if v_sc is not None:
-                    out.CreateScalesAttr().Set(v_sc)
-                pose_of[i] = (f"/World/WorkerPose{i}", tag)
-                self.stage.RemovePrim(scratch)
-            except Exception as exc:
-                self.log(f"NVIDIA_WORKER_CLIP_ERROR: {rel} -> {exc}")
-                try:
-                    self.stage.RemovePrim(scratch)
-                except Exception:
-                    pass
-
-        bound = 0
-        for i, (_x, _y, _yaw, _ci, pose_idx) in enumerate(WORKERS):
-            path = f"/World/NVIDIA/Worker{i + 1}"
-            if path not in self.applied or pose_idx not in pose_of:
-                continue
-            try:
-                root = None
-                for prim in Usd.PrimRange(
-                    self.stage.GetPrimAtPath(path + "/Asset")
-                ):
-                    if prim.IsA(UsdSkel.Root):
-                        root = prim
-                        break
-                if root is None:
-                    continue
-                UsdSkel.BindingAPI.Apply(root)
-                UsdSkel.BindingAPI(root).CreateAnimationSourceRel().SetTargets(
-                    [pose_of[pose_idx][0]]
-                )
-                bound += 1
-            except Exception as exc:
-                self.log(f"NVIDIA_WORKER_POSE_ERROR: {path} -> {exc}")
-        self.log(f"NVIDIA_WORKER_POSE: bound={bound}/{len(WORKERS)}")
-
 
 def build_nvidia_site(layer, cfg, stage):
     """Queue the industrial set dressing from config + module tables."""
@@ -550,12 +414,4 @@ def build_nvidia_site(layer, cfg, stage):
             "prop", rel, f"/World/NVIDIA/Prop{i}_{kind}",
             (x, y, 0.0), mode="natural", anchor="floor",
             yaw=yaw, cap=2.4,
-        )
-
-    # Render-only crew.  Their bodies have no physics colliders.
-    for i, (_x, _y, yaw, ci, _pose) in enumerate(WORKERS):
-        layer.add(
-            "worker", WORKER_USDS[ci], f"/World/NVIDIA/Worker{i + 1}",
-            (_x, _y, 0.0), mode="natural", anchor="floor",
-            yaw=yaw, cap=2.1,
         )

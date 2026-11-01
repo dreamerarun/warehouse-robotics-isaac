@@ -6,6 +6,7 @@
 #   scripts/run_demo.sh --headless --duration 120
 #   scripts/run_demo.sh --camera ur10 --no-hud
 #   scripts/run_demo.sh --no-franka --no-humanoid --no-industrial
+#   scripts/run_demo.sh --people --headless --nvidia-assets --duration 60
 #   scripts/run_demo.sh -- --ros-args ...     # everything after -- goes to launch
 #
 # Ctrl+C stops both processes.
@@ -33,6 +34,8 @@ while [[ $# -gt 0 ]]; do
         --no-nvidia-assets) SIM_ARGS+=(--no-nvidia-assets); shift ;;
         --camera) SIM_ARGS+=(--camera "$2"); shift 2 ;;
         --no-hud) SIM_ARGS+=(--no-hud); shift ;;
+        --people) SIM_ARGS+=(--people); shift ;;
+        --no-people) SIM_ARGS+=(--no-people); shift ;;
         --no-autonomy) AUTONOMY=0; shift ;;
         --build) BUILD=1; shift ;;
         --domain-id) SIM_ARGS+=(--domain-id "$2"); export ROS_DOMAIN_ID="$2"; shift 2 ;;

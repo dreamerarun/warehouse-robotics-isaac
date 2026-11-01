@@ -62,7 +62,11 @@ def parse_args():
     p.add_argument("--camera", choices=("overview", "ur10", "h1"), default="overview",
                    help="visual camera preset")
     p.add_argument("--no-hud", action="store_true", help="hide the status HUD")
-    p.set_defaults(realtime=None, nvidia_assets=None)
+    p.add_argument("--people", action="store_true", dest="people",
+                   help="enable NVIDIA People dynamic crew + NavMesh (visual mode)")
+    p.add_argument("--no-people", action="store_false", dest="people",
+                   help="disable the NVIDIA People dynamic crew + NavMesh")
+    p.set_defaults(realtime=None, nvidia_assets=None, people=None)
     return p.parse_args()
 
 
@@ -82,6 +86,7 @@ def main():
     domain_id = args.domain_id
     if domain_id is None:
         domain_id = int(world_cfg.get("ros_domain_id", 0))
+    use_people = (not args.headless) if args.people is None else bool(args.people)
 
     warehouse_ros_env.prepare(domain_id=domain_id)
 
@@ -115,7 +120,6 @@ def main():
     from warehouse_ros2 import RosBridge
     from warehouse_scene import Materials, build_scene
     from warehouse_nvidia import (
-        WORKERS,
         NvidiaAssetLayer,
         build_nvidia_site,
     )
@@ -125,7 +129,16 @@ def main():
     if not assets_root:
         raise RuntimeError("Could not resolve the Isaac Sim asset root")
 
-    stage = get_current_stage()
+    if use_people:
+        # The People / animation / navigation extensions must be enabled before
+        # the stage is opened, and the real stage has to go through the USD
+        # context so omni.anim.graph.get_character() can find the characters.
+        from warehouse_people import enable_people_extensions, open_people_stage
+
+        enable_people_extensions(app)
+        stage = open_people_stage(app, PROJECT_ROOT)
+    else:
+        stage = get_current_stage()
     stage.SetTimeCodesPerSecond(200.0)
 
     physics_dt = float(world_cfg["physics_dt"])
@@ -139,7 +152,8 @@ def main():
           f"ROS={'off' if args.no_ros else 'on'}   domain={domain_id}")
     print(f" robots : {len(cfg['amrs'])} AMR, "
           f"Franka={'on' if cfg['franka'].get('enabled') and not args.no_franka else 'off'}, "
-          f"Humanoid={'on' if cfg['humanoid'].get('enabled') and not args.no_humanoid else 'off'}")
+          f"Humanoid={'on' if cfg['humanoid'].get('enabled') and not args.no_humanoid else 'off'}, "
+          f"People={'on' if use_people else 'off'}")
     print("=" * 72, flush=True)
 
     # -- extensions ------------------------------------------------------
@@ -171,6 +185,12 @@ def main():
     if use_nvidia:
         layer = NvidiaAssetLayer(stage, assets_root, app)
         build_nvidia_site(layer, cfg, stage)
+
+    if use_people and not use_nvidia:
+        print("[people] disabled: --people requires NVIDIA SimReady set dressing "
+              "(use --nvidia-assets) so the NavMesh can resolve obstacles",
+              flush=True)
+        use_people = False
 
     amrs = []
     for spec in cfg["amrs"]:
@@ -235,9 +255,6 @@ def main():
 
     if layer is not None:
         layer.apply()
-        layer.author_worker_poses(
-            [f"/World/NVIDIA/Worker{i + 1}" for i in range(len(WORKERS))]
-        )
         if humanoid is not None:
             humanoid.after_assets()
         if process is not None:
@@ -247,6 +264,39 @@ def main():
             f"({dict(layer.stats)})",
             flush=True,
         )
+
+    # -- NVIDIA People dynamic crew + NavMesh ---------------------------
+    people = None
+    if use_people:
+        from warehouse_people import setup_people
+
+        people_roots = []
+        for amr in amrs:
+            people_roots.append(amr.robot_path)
+        if franka is not None:
+            people_roots.append(franka.robot_path)
+        if humanoid is not None:
+            people_roots.append(humanoid.prim_path)
+        if forklift is not None:
+            people_roots.append(forklift.root_path)
+            people_roots.append(forklift.body_path)
+        if process is not None:
+            people_roots.append(process.robot_path)
+            people_roots.append(process.cell_path)
+        people_roots.extend(("/World/Characters/Biped_Setup", "/World/Process"))
+
+        people = setup_people(
+            app,
+            stage,
+            cfg,
+            assets_root,
+            dynamic_roots=people_roots,
+            materials=materials,
+            project_root=PROJECT_ROOT,
+            log=print,
+        )
+        if people is None:
+            print("[people] NOT READY: dynamic crew skipped", flush=True)
 
     # -- physics initialisation -----------------------------------------
     world.reset()
@@ -310,7 +360,7 @@ def main():
         else:
             set_camera_view(eye=[15.0, -16.0, 14.5], target=[0.0, 0.2, 0.8])
     hud = (
-        _build_hud(args, amrs, franka, humanoid, forklift, process)
+        _build_hud(args, amrs, franka, humanoid, forklift, process, people)
         if not args.headless and not args.no_hud else None
     )
 
@@ -380,13 +430,13 @@ def main():
             if now - last_status > 2.0:
                 last_status = now
                 _print_status(
-                    amrs, franka, humanoid, forklift, process, world, bridge, args
+                    amrs, franka, humanoid, forklift, process, world, bridge, args, people
                 )
             if hud is not None and now - last_hud > 0.25:
                 last_hud = now
                 _update_hud(
                     hud, amrs, franka, humanoid, forklift, process,
-                    world, bridge, args,
+                    world, bridge, args, people,
                 )
 
             if args.duration > 0.0 and world.current_time - t0_sim >= args.duration:
@@ -408,8 +458,36 @@ def main():
         app.close()
 
 
-def _print_status(amrs, franka, humanoid, forklift, process, world, bridge, args):
+def _print_status(amrs, franka, humanoid, forklift, process, world, bridge, args, people=None):
     parts = [f"t={world.current_time:7.2f}s"]
+    if people is not None:
+        parts.append(
+            f"people={people['worker_count']} agents "
+            f"navmesh={'ok' if people['navmesh'] is not None else 'FAIL'}"
+        )
+        people_stage = people.get("stage")
+        if people_stage is not None:
+            import omni.anim.graph.core as _ag
+            import carb
+
+            for name in people.get("workers") or []:
+                try:
+                    prim = people_stage.GetPrimAtPath(f"/World/People/{name}/Asset")
+                    if prim is None or not prim.IsValid():
+                        parts.append(f"{name}=? no prim")
+                        continue
+                    character = _ag.get_character(str(prim.GetPath()))
+                    if character is None:
+                        parts.append(f"{name}=? no character")
+                        continue
+                    pos = carb.Float3()
+                    rot = carb.Float4()
+                    character.get_world_transform(pos, rot)
+                    parts.append(
+                        f"{name}=({pos.x:+.2f},{pos.y:+.2f},{pos.z:+.2f})"
+                    )
+                except Exception:
+                    parts.append(f"{name}=?")
     for amr in amrs:
         pos, quat = amr.pose()
         from warehouse_robots import quat_yaw
@@ -434,7 +512,7 @@ def _print_status(amrs, franka, humanoid, forklift, process, world, bridge, args
     print("[sim] " + "  ".join(parts), flush=True)
 
 
-def _build_hud(args, amrs, franka, humanoid, forklift, process=None):
+def _build_hud(args, amrs, franka, humanoid, forklift, process=None, people=None):
     try:
         import omni.ui as ui
     except Exception:
@@ -471,6 +549,8 @@ def _build_hud(args, amrs, franka, humanoid, forklift, process=None):
                 labels["humanoid"] = ui.Label("", style={"font_size": 13})
             if forklift is not None:
                 labels["forklift"] = ui.Label("", style={"font_size": 13})
+            if people is not None:
+                labels["people"] = ui.Label("", style={"font_size": 12, "color": 0xFF9AD29A})
             ui.Spacer(height=6)
             labels["ros"] = ui.Label("", style={"font_size": 12, "color": 0xFF9AD29A})
             labels["hint"] = ui.Label(
@@ -483,7 +563,7 @@ def _build_hud(args, amrs, franka, humanoid, forklift, process=None):
 
 
 def _update_hud(labels, amrs, franka, humanoid, forklift, process,
-                world, bridge, args):
+                world, bridge, args, people=None):
     from warehouse_robots import quat_yaw
 
     for amr in amrs:
@@ -510,6 +590,11 @@ def _update_hud(labels, amrs, franka, humanoid, forklift, process,
         labels["forklift"].text = (
             f"FORKLIFT pos ({fpos[0]:+6.2f}, {fpos[1]:+6.2f})  "
             f"dynamic obstacle"
+        )
+    if people is not None and "people" in labels:
+        labels["people"].text = (
+            f"PEOPLE {people['worker_count']} agents | navmesh "
+            f"{'ok' if people['navmesh'] is not None else 'FAIL'}"
         )
     labels["ros"].text = (
         f"t = {world.current_time:8.2f} s    ROS graphs = {len(bridge.graphs)}"
