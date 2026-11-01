@@ -450,7 +450,7 @@ def setup_people(
         "omni/anim/people/scripts/character_behavior.py",
     )
     command_path = write_command_file(people_cfg, project_root or "/")
-    agent_radius = float(people_cfg.get("agent_radius") or 0.35)
+    agent_radius = float(people_cfg.get("agent_radius") or 0.5)
     configure_people_settings(people_cfg, script_path, command_path, assets_root, agent_radius)
 
     graph_prim = load_animation_graph(stage, cfg, assets_root, app)

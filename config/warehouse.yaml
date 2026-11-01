@@ -216,7 +216,7 @@ people:
   animation_graph: Isaac/People/Characters/Biped_Setup.usd
   graph_root: /World/Characters/Biped_Setup
   number_of_loop: inf
-  agent_radius: 0.35
+  agent_radius: 0.5
   dynamic_avoidance: true
   navmesh:
     enabled: true
