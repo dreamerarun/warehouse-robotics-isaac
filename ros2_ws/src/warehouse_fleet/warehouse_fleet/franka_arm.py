@@ -70,11 +70,13 @@ class FrankaArm(Node):
         self.wait_until = 0.0
         self.last_label = ""
         self.last_status_pub = 0.0
+        self.cycles = 0
 
         self.pub_cmd = self.create_publisher(
             JointState, "/franka/joint_command", 10
         )
         self.pub_status = self.create_publisher(String, "/franka/status", 10)
+        self.pub_events = self.create_publisher(String, "/fleet/task_events", 10)
         self.create_subscription(
             JointState, "/franka/joint_states", self.on_feedback, 10
         )
@@ -145,6 +147,12 @@ class FrankaArm(Node):
                     self.index = 0
                     self.start_joints = self._measured()
                     self.start_gripper = self._measured_gripper()
+                    self.cycles += 1
+                    self.pub_events.publish(String(data=json.dumps({
+                        "event": "franka_cycle",
+                        "robot": "franka",
+                        "cycles": self.cycles,
+                    })))
                     self._begin_step(now)
                     self.get_logger().info("Pick-and-place cycle complete - restarting")
                 else:
@@ -220,6 +228,7 @@ class FrankaArm(Node):
                 "steps": len(self.sequence),
                 "label": self.last_label,
                 "gripper": round(float(gripper), 4),
+                "cycles": int(self.cycles),
             }
             self.pub_status.publish(String(data=json.dumps(data)))
 

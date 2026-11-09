@@ -71,6 +71,12 @@ class AmrAgent(Node):
         self.path_stamp = 0.0
         self.hold = False
         self.scale = 1.0
+        self.mode = "AUTO"
+        self.teleop_v = 0.0
+        self.teleop_w = 0.0
+        self.teleop_stamp = 0.0
+        self.teleop_timeout = float(fleet.get("teleop_timeout", 0.65))
+        self.teleop_max_turn = float(fleet.get("teleop_angular_speed", 0.9))
         self.scan = None
         self.scan_time = 0.0
         self.blocked_since = None
@@ -119,6 +125,10 @@ class AmrAgent(Node):
         )
         self.create_subscription(Odometry, f"{self.name}/odom", self.on_odom, 10)
         self.create_subscription(LaserScan, f"{self.name}/scan", self.on_scan, 10)
+        self.create_subscription(String, f"{self.name}/mode", self.on_mode, 10)
+        self.create_subscription(
+            Twist, f"{self.name}/teleop_cmd_vel", self.on_teleop, 10
+        )
 
         rate = max(5.0, float(self.get_parameter("control_rate").value))
         self.create_timer(1.0 / rate, self.control)
@@ -154,6 +164,24 @@ class AmrAgent(Node):
         self.scan = msg
         self.scan_time = time.time()
 
+    def on_mode(self, msg: String):
+        mode = str(msg.data).strip().upper()
+        if mode not in ("AUTO", "TELEOP", "STOPPED"):
+            return
+        if mode != self.mode:
+            self.mode = mode
+            self.blocked_since = None
+            if mode != "AUTO":
+                self.path = []
+        if mode != "TELEOP":
+            self.teleop_v = 0.0
+            self.teleop_w = 0.0
+
+    def on_teleop(self, msg: Twist):
+        self.teleop_v = float(msg.linear.x)
+        self.teleop_w = float(msg.angular.z)
+        self.teleop_stamp = time.time()
+
     # ------------------------------------------------------------------
     # Control
     # ------------------------------------------------------------------
@@ -163,6 +191,26 @@ class AmrAgent(Node):
         remaining = 0.0
         safety = 1.0
         status = "idle"
+
+        if self.mode in ("STOPPED", "TELEOP"):
+            if self.mode == "STOPPED":
+                status = "estopped"
+            elif now - self.teleop_stamp > self.teleop_timeout:
+                status = "teleop_idle"
+            else:
+                v = max(-0.45 * self.max_speed,
+                        min(self.max_speed, self.teleop_v))
+                w = max(-self.teleop_max_turn,
+                        min(self.teleop_max_turn, self.teleop_w))
+                status = "teleop"
+            twist = Twist()
+            twist.linear.x = float(v)
+            twist.angular.z = float(w)
+            self.pub_cmd.publish(twist)
+            if now - self.last_control >= 0.5:
+                self.last_control = now
+                self._publish_status(status, 0.0, v, w, 1.0)
+            return
 
         if self.pose is not None and self.path:
             remaining = math.hypot(
@@ -436,6 +484,7 @@ class AmrAgent(Node):
         data = {
             "robot": self.name,
             "state": status,
+            "mode": self.mode,
             "pose": None if self.pose is None else [
                 round(self.pose[0], 3), round(self.pose[1], 3), round(self.pose[2], 3)
             ],
@@ -449,6 +498,8 @@ class AmrAgent(Node):
             "min_angle": round(self.min_angle, 3),
             "path_points": len(self.path),
             "path_age": round(time.time() - self.path_stamp, 2) if self.path else 0.0,
+            "teleop_age": round(time.time() - self.teleop_stamp, 2)
+            if self.teleop_stamp else None,
         }
         self.pub_status.publish(String(data=json.dumps(data)))
 

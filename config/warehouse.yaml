@@ -82,6 +82,9 @@ scene:
     stack_step: 0.30
     dwell: 2.5
     reset_delay: 4.0
+    initial_stock: 1            # one tote on the infeed at boot
+    stock_capacity: 4
+    feed_period: 8.0            # visual-only fallback when ROS has no deliveries
 
   # Static "keep-out" boxes that are not racks (Franka table, charging bank,
   # conveyors).  Every rectangle is inflated by the fleet planner.
@@ -116,20 +119,26 @@ scene:
 # -----------------------------------------------------------------------------
 amrs:
   - name: amr1
+    role: inbound receiving runner
     spawn: {x: 1.0, y: -6.0, yaw: 0.0}
     right_of_way: 1
     max_speed: 0.65
     lidar_mount: [-0.06, 0.0, 0.38]
+    preferred_templates: [T1, T3]
   - name: amr2
+    role: staging / palletising runner
     spawn: {x: 3.0, y: -6.0, yaw: 0.0}
     right_of_way: 2
     max_speed: 0.65
     lidar_mount: [-0.06, 0.0, 0.38]
+    preferred_templates: [T2, T5]
   - name: amr3
+    role: outbound / empty-tote runner
     spawn: {x: 5.0, y: -6.0, yaw: 0.0}
     right_of_way: 3
     max_speed: 0.65
     lidar_mount: [-0.06, 0.0, 0.38]
+    preferred_templates: [T4, T6]
 
 # -----------------------------------------------------------------------------
 # Franka Panda pick-and-place cell
@@ -272,17 +281,72 @@ people:
         - {x: -9.1, y: -2.2}
 
 # -----------------------------------------------------------------------------
-# Work queue.  `loop: true` re-queues every task once all are complete.
+# Work queue.
+#
+# `managed: true` turns the list below into a live warehouse flow.  Each
+# template consumes its `requires` stock when an AMR is assigned and publishes
+# its `produces` stock when the delivery completes.  The fleet manager only
+# dispatches work when the source has stock and the destination has capacity,
+# so the queue cannot manufacture or lose totes.  `loop` is kept for the older
+# fixed-cycle mode used when managed is false.
 # -----------------------------------------------------------------------------
 tasks:
-  loop: true
+  managed: true
+  loop: false
+  max_pending: 8
+  supplier_period: 14.0         # receiving conveyor replenishes inbound stock
+  shipping_period: 10.0         # outbound conveyor ships totes / frees empties
+  initial_inventory: {inbound: 4, staging: 2, outbound: 1, empty: 1, arm_dock: 1}
+  capacity:          {inbound: 6, staging: 3, outbound: 8, empty: 6, arm_dock: 3}
   list:
-    - {id: T1, pickup: inbound,  dropoff: staging,  priority: 1}
-    - {id: T2, pickup: staging,  dropoff: outbound, priority: 2}
-    - {id: T3, pickup: inbound,  dropoff: outbound, priority: 3}
-    - {id: T4, pickup: outbound, dropoff: staging,  priority: 4}
-    - {id: T5, pickup: staging,  dropoff: arm_dock, priority: 5}
-    - {id: T6, pickup: arm_dock, dropoff: inbound,  priority: 6}
+    - id: T1
+      pickup: inbound
+      dropoff: staging
+      priority: 1
+      cargo: raw_tote
+      description: Receiving to palletising infeed
+      requires: {inbound: 1}
+      produces: {staging: 1}
+    - id: T2
+      pickup: staging
+      dropoff: outbound
+      priority: 2
+      cargo: finished_tote
+      description: Palletising output to shipping
+      requires: {staging: 1}
+      produces: {outbound: 1}
+    - id: T3
+      pickup: inbound
+      dropoff: outbound
+      priority: 3
+      cargo: cross_dock_tote
+      description: Cross-dock expedited tote
+      requires: {inbound: 1}
+      produces: {outbound: 1}
+    - id: T4
+      pickup: outbound
+      dropoff: staging
+      priority: 4
+      cargo: empty_tote
+      description: Empty tote return to palletising
+      requires: {empty: 1}
+      produces: {staging: 1}
+    - id: T5
+      pickup: staging
+      dropoff: arm_dock
+      priority: 5
+      cargo: qa_sample
+      description: QA sample to the Franka inspection cell
+      requires: {staging: 1}
+      produces: {arm_dock: 1}
+    - id: T6
+      pickup: arm_dock
+      dropoff: inbound
+      priority: 6
+      cargo: inspected_tote
+      description: Inspected tote back to receiving
+      requires: {arm_dock: 1}
+      produces: {inbound: 1}
 
 fleet:
   map_resolution: 0.10          # metres per cell
@@ -302,3 +366,16 @@ fleet:
   scan_safety_slow: 1.30
   scan_safety_side: 0.0         # optional 360-degree stop; off (LiDAR self-hits)
   path_lookahead: 0.45
+  teleop_linear_speed: 0.45     # dashboard / keyboard teleop ceiling
+  teleop_angular_speed: 0.90
+  teleop_timeout: 0.65          # dead-man timeout on /<amr>/teleop_cmd_vel
+
+# -----------------------------------------------------------------------------
+# Browser operations dashboard (ROS 2 node + standard-library HTTP server)
+# -----------------------------------------------------------------------------
+dashboard:
+  enabled: true
+  host: 127.0.0.1             # set 0.0.0.0 only on a trusted network
+  port: 8080
+  state_period: 0.5
+  event_history: 120

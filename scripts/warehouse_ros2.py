@@ -35,6 +35,7 @@ class TwistHandle:
     linear: object = None
     angular: object = None
     last: np.ndarray = field(default_factory=lambda: np.zeros(6, dtype=float))
+    received: bool = False
 
     def read(self):
         try:
@@ -44,6 +45,7 @@ class TwistHandle:
             return self.last.copy()
         if lin.size < 3 or ang.size < 3:
             return self.last.copy()
+        self.received = True
         self.last = np.array(
             [lin[0], lin[1], lin[2], ang[0], ang[1], ang[2]], dtype=float
         )
@@ -85,6 +87,7 @@ class RosBridge:
         self.graphs = []
         self.twists = {}
         self.joint_commands = {}
+        self.string_pubs = {}
 
     # -- lifecycle --------------------------------------------------------
     def start(self):
@@ -206,6 +209,113 @@ class RosBridge:
         )
         self.twists[name] = h
         return True
+
+    def add_twist_input(self, key, topic):
+        """Subscribe to a simple geometry_msgs/Twist command channel.
+
+        The load-state and UR10 command channels use a Twist as a compact
+        three-float transport: linear.x is the value, and the remaining
+        components are reserved for pulses.  This keeps the bridge on the
+        well-supported typed OmniGraph nodes.
+        """
+        if not self.enabled:
+            return False
+        import omni.graph.core as og
+
+        graph = f"/World/ROS2/input_{key}"
+        try:
+            self._graph(
+                graph,
+                [
+                    ("Tick", "omni.graph.action.OnPlaybackTick"),
+                    ("SubTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
+                ],
+                [("SubTwist.inputs:topicName", topic)],
+                [("Tick.outputs:tick", "SubTwist.inputs:execIn")],
+            )
+        except Exception as exc:
+            self.errors.append(f"{key} input graph: {exc}")
+            return False
+        self.twists[key] = TwistHandle(
+            linear=og.Controller.attribute(
+                graph + "/SubTwist.outputs:linearVelocity"
+            ),
+            angular=og.Controller.attribute(
+                graph + "/SubTwist.outputs:angularVelocity"
+            ),
+        )
+        return True
+
+    def add_string_publisher(self, key, topic):
+        """Publish JSON/string telemetry through the generic ROS 2 publisher.
+
+        OmniGraph creates the dynamic ``inputs:data`` port only after the
+        message type is selected, so the graph is built first, evaluated for a
+        frame, then a ConstantToken is connected to that port.  The token value
+        is updated from the simulation loop by :meth:`publish_string`.
+        """
+        if not self.enabled:
+            return False
+        import omni.graph.core as og
+
+        graph = f"/World/ROS2/pub_{key}"
+        try:
+            self._graph(
+                graph,
+                [
+                    ("Tick", "omni.graph.action.OnPlaybackTick"),
+                    ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+                    ("Pub", "isaacsim.ros2.bridge.ROS2Publisher"),
+                    ("Str", "omni.graph.nodes.ConstantToken"),
+                ],
+                [
+                    ("Pub.inputs:topicName", topic),
+                    ("Pub.inputs:messagePackage", "std_msgs"),
+                    ("Pub.inputs:messageName", "String"),
+                    ("Pub.inputs:messageSubfolder", "msg"),
+                    ("Str.inputs:value", "{}"),
+                ],
+                [
+                    ("Context.outputs:context", "Pub.inputs:context"),
+                    ("Tick.outputs:tick", "Pub.inputs:execIn"),
+                ],
+            )
+            for _ in range(2):
+                self.app.update()
+            source = og.Controller.attribute(graph + "/Str.inputs:value")
+            data = og.Controller.attribute(graph + "/Pub.inputs:data")
+            og.Controller.connect(source, data)
+        except Exception as exc:
+            self.errors.append(f"{key} string publisher: {exc}")
+            return False
+        self.string_pubs[key] = source
+        return True
+
+    def publish_string(self, key, text):
+        source = self.string_pubs.get(key)
+        if source is None:
+            return False
+        try:
+            import omni.graph.core as og
+
+            og.Controller.set(source, str(text))
+            return True
+        except Exception:
+            return False
+
+    def load_state(self, name):
+        handle = self.twists.get("load_" + name)
+        if handle is None:
+            return None, 0.0
+        values = handle.read()
+        return handle.received, float(values[0])
+
+    def input_twist(self, key):
+        handle = self.twists.get(key)
+        if handle is None:
+            return None, np.zeros(6)
+        values = handle.read()
+        return handle.received, values
 
     def add_humanoid(self, name, body_path):
         if not self.enabled:

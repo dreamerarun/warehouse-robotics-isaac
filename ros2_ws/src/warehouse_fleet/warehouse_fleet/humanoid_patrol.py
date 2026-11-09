@@ -82,6 +82,7 @@ class HumanoidPatrol(Node):
         self.pub_status = self.create_publisher(
             String, f"/{self.name}/status", 10
         )
+        self.pub_events = self.create_publisher(String, "/fleet/task_events", 10)
         self.create_subscription(
             Odometry, f"/{self.name}/odom", self.on_odom, 10
         )
@@ -161,6 +162,7 @@ class HumanoidPatrol(Node):
                     self.state = "TO_DROPOFF"
                     self.target = self.dropoff
                     self.face_yaw = self.dropoff[2]
+                    self._event("h1_loaded", {"loads": self.loads})
                     self.get_logger().info(
                         f"tote loaded - carrying to dropoff ({self.loads} total)"
                     )
@@ -169,6 +171,7 @@ class HumanoidPatrol(Node):
                     self.state = "TO_PICKUP"
                     self.target = self.pickup
                     self.face_yaw = self.pickup[2]
+                    self._event("h1_delivered", {"loads": self.loads})
                     self.get_logger().info("tote delivered - returning to pickup")
                 self.state_since = now
                 self.best_distance = float("inf")
@@ -281,6 +284,12 @@ class HumanoidPatrol(Node):
         msg.linear.x = float(vx)
         msg.angular.z = float(wz)
         self.pub_cmd.publish(msg)
+
+    def _event(self, event, data=None):
+        payload = {"event": event, "robot": self.name}
+        if data:
+            payload.update(data)
+        self.pub_events.publish(String(data=json.dumps(payload)))
 
 
 def main(args=None):

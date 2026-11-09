@@ -9,6 +9,7 @@
 #   scripts/run_demo.sh --people --headless --nvidia-assets --duration 60
 #   scripts/run_demo.sh -- --ros-args ...     # everything after -- goes to launch
 #
+# The operations dashboard is on http://127.0.0.1:8080 by default.
 # Ctrl+C stops both processes.
 set -euo pipefail
 
@@ -37,11 +38,14 @@ while [[ $# -gt 0 ]]; do
         --people) SIM_ARGS+=(--people); shift ;;
         --no-people) SIM_ARGS+=(--no-people); shift ;;
         --no-autonomy) AUTONOMY=0; shift ;;
+        --no-dashboard) LAUNCH_ARGS+=(dashboard:=false); shift ;;
+        --dashboard-host) LAUNCH_ARGS+=("dashboard_host:=$2"); shift 2 ;;
+        --dashboard-port) LAUNCH_ARGS+=("dashboard_port:=$2"); shift 2 ;;
         --build) BUILD=1; shift ;;
         --domain-id) SIM_ARGS+=(--domain-id "$2"); export ROS_DOMAIN_ID="$2"; shift 2 ;;
         --) shift; LAUNCH_ARGS+=("$@"); break ;;
         -h|--help)
-            sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *)
             echo "error: unknown option: $1 (use --help)" >&2

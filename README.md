@@ -10,6 +10,10 @@ process. ROS 2 owns fleet allocation, planning, traffic control, and robot
 commands. Both sides read the same `config/warehouse.yaml`, so the visible
 scene and the planner geometry cannot silently disagree.
 
+A browser operations dashboard connects directly to the ROS 2 graph for live
+mapping, fleet/process telemetry, work-order dispatch, autonomous/paused/
+emergency-stop control, and per-robot teleoperation.
+
 ![Warehouse overview](screenshots/warehouse_overview.png)
 
 ![UR10 palletising cell](screenshots/ur10_palletising.png)
@@ -46,6 +50,7 @@ scene and the planner geometry cannot silently disagree.
 | **1 × forklift** | Dynamic obstacle | Kinematic route through the rack cross-aisle; yields to AMRs |
 | **NVIDIA SimReady props** | Set dressing | Racks, stock, totes, pallets, conveyors, safety equipment, and visual props |
 | **NVIDIA People crew** | Human motion | Animated workers follow A*-planned routes, with idle and look-around behaviours |
+| **Operations dashboard** | ROS 2 web client | Live occupancy map, fleet and process state, task dispatch, E-stop, and teleop |
 
 The current build deliberately keeps the process **visible and deterministic**:
 
@@ -59,8 +64,9 @@ The current build deliberately keeps the process **visible and deterministic**:
 - The NVIDIA People workers move through the baked NavMesh; the AMR planner
   treats them as dynamic obstacles.
 
-The scene is 20 m × 14 m. The fleet runs six transport tasks by default and
-repeats the queue when `tasks.loop` is true.
+The scene is 20 m × 14 m. The fleet runs a managed tote flow with six work-order
+templates, live inventory accounting, and supplier/shipping replenishment. The
+dashboard is the operator view of that flow.
 
 ---
 
@@ -187,7 +193,8 @@ ros2 pkg executables warehouse_fleet
 ```
 
 Expected executables include `fleet_manager`, `amr_agent`, `franka_arm`,
-`humanoid_patrol`, `fleet_monitor`, `submit_task`, and `teleop_amr`.
+`humanoid_patrol`, `fleet_monitor`, `dashboard_server`, `submit_task`, and
+`teleop_amr`.
 
 ### 4. Set the ROS environment
 
@@ -263,6 +270,35 @@ The animated NVIDIA People crew is part of the default visual run. Workers
 follow the routes from `config/warehouse.yaml` through the Isaac Sim People
 command layer and the baked navigation mesh.
 
+### Operations dashboard
+
+The launch stack starts a ROS 2 dashboard node and a small standard-library
+HTTP server. Open:
+
+```text
+http://127.0.0.1:8080
+```
+
+The dashboard shows:
+
+- the live `fleet/map` occupancy grid, scene geometry, AMR poses and planned
+  paths;
+- connected AMRs, H1, Franka, UR10, and forklift status;
+- managed work orders, inventory, pallet stack, and conveyor state;
+- `Autonomous`, `Pause`, and `E-STOP` fleet modes;
+- per-robot teleoperation with a keyboard/D-pad dead-man channel;
+- UR10 pause/resume/pallet-reset controls and a live event stream.
+
+To expose the dashboard on another interface (only on a trusted network):
+
+```bash
+scripts/run_demo.sh --dashboard-host 0.0.0.0 --dashboard-port 8080
+```
+
+Use `--no-dashboard` to start the simulation and autonomy without the web
+server. If the port is already in use, pass `--dashboard-port 8081` or set
+`dashboard.port` in the YAML.
+
 ### Camera presets
 
 ```bash
@@ -330,6 +366,9 @@ scripts/run_demo.sh --no-people --duration 60
 | `--nvidia-assets` | Force the NVIDIA visual layer on |
 | `--no-nvidia-assets` | Force procedural visuals in visual mode |
 | `--no-autonomy` | Start Isaac Sim only |
+| `--no-dashboard` | Do not start the browser dashboard node |
+| `--dashboard-host HOST` | Dashboard bind address (default `127.0.0.1`) |
+| `--dashboard-port PORT` | Dashboard HTTP port (default `8080`) |
 | `--build` | Rebuild `warehouse_fleet` before starting |
 | `--domain-id N` | Set `ROS_DOMAIN_ID` for the simulator and autonomy |
 | `-- ARGS...` | Pass remaining arguments to `ros2 launch` |
@@ -349,6 +388,9 @@ scripts/run_demo.sh --no-people --duration 60
 | `humanoid:=true|false` | `true` | Start H1 controller |
 | `monitor:=true|false` | `true` | Print the fleet dashboard |
 | `markers:=true|false` | `true` | Publish RViz markers |
+| `dashboard:=true|false` | `true` | Start the browser operations dashboard |
+| `dashboard_host:=HOST` | config | Dashboard bind address |
+| `dashboard_port:=PORT` | config | Dashboard HTTP port |
 | `rviz:=true|false` | `false` | Start RViz |
 | `domain_id:=N` | inherit shell | Set `ROS_DOMAIN_ID` for launched nodes |
 
@@ -356,23 +398,38 @@ scripts/run_demo.sh --no-people --duration 60
 
 ## What to watch
 
-### AMR task loop
+### Managed AMR task flow
 
-The default queue is:
+The default `tasks.managed: true` mode turns the template list into a live
+warehouse flow. Each template declares the tote stock it consumes and produces:
 
-| Task | Pickup | Drop-off |
-|---|---|---|
-| T1 | `inbound` | `staging` |
-| T2 | `staging` | `outbound` |
-| T3 | `inbound` | `outbound` |
-| T4 | `outbound` | `staging` |
-| T5 | `staging` | `arm_dock` |
-| T6 | `arm_dock` | `inbound` |
+| Template | Pickup | Drop-off | Consumes | Produces |
+|---|---|---|---|---|
+| T1 | `inbound` | `staging` | inbound | staging |
+| T2 | `staging` | `outbound` | staging | outbound |
+| T3 | `inbound` | `outbound` | inbound | outbound |
+| T4 | `outbound` | `staging` | empty | staging |
+| T5 | `staging` | `arm_dock` | staging | arm_dock |
+| T6 | `arm_dock` | `inbound` | arm_dock | inbound |
 
-The fleet manager chooses an idle AMR based on distance to the pickup. After a
-pickup the robot displays a carried tote while in transit. At a station pad it
-dwells, then either takes the next hot task at the drop-off or drives to its
-dedicated parking spot when the queue is empty.
+The fleet manager only dispatches a work order when its source stock is
+available and the destination has capacity. Stock is reserved when an AMR is
+assigned, then committed when the drop-off dwell completes. The receiving
+conveyor replenishes `inbound`; the shipping conveyor consumes `outbound` and
+returns `empty` totes. This prevents the queue from manufacturing or losing
+totes. A manually submitted task is always accepted and is not part of the
+managed inventory accounting.
+
+AMR roles and preferred templates are configured per robot:
+
+- `amr1` prefers receiving/cross-dock work (`T1`, `T3`);
+- `amr2` prefers staging/palletising and QA (`T2`, `T5`);
+- `amr3` prefers empty-tote and inspection returns (`T4`, `T6`).
+
+The fleet manager chooses an idle AMR by template preference, distance, and
+priority. After a pickup the robot displays a carried tote while in transit. At
+a station pad it dwells, then either takes the next hot task at the drop-off or
+drives to its dedicated parking spot when the queue is empty.
 
 By default `fleet.max_active_amrs: 1`. The station aisle is narrow, so one AMR
 executes tasks at a time. The other two Carters remain visible in their parked
@@ -381,8 +438,13 @@ in an aisle that is only about 2 m wide. The inactive robots can still be
 controlled or manually tested, but the autonomy stack will not allocate a new
 task to them until an active slot is free.
 
-When every task is complete and all active robots are idle, the queue resets
-for the next cycle if `tasks.loop: true`.
+The UR10 cell consumes totes from the physical staging infeed and publishes
+its own stack/shipping counters on `/ur10/status`. The dashboard shows both the
+fleet work-order inventory and the live UR10 infeed stock so the conveyor-to-
+pallet path is visible.
+
+When `tasks.managed` is false, the older fixed-cycle queue is used; it repeats
+when `tasks.loop: true`.
 
 ### Conveyors and the UR10 cell
 
@@ -413,7 +475,14 @@ is at `(4.60, 2.30)` with its top at `0.15 m`. Stack centres are approximately
 `z = 0.29`, `0.59`, and `0.89 m`.
 
 The arm is not driven by a ROS action server. Isaac Sim runs the pick-place
-state machine locally and publishes `/ur10/joint_states` for inspection.
+state machine locally, consumes physical staging stock when an AMR unloads a
+tote, and publishes stack/shipping/status JSON on `/ur10/status` and
+`/warehouse/process_status`. With no ROS fleet (`--no-ros` or a bare simulation
+smoke test) it falls back to a timed visual feed so the cell still runs.
+
+The dashboard can pause/resume the cell or clear a full output pallet; those
+commands are edge-triggered pulses on `/ur10/command`. The cell does not model
+a physics contact grasp.
 
 ### H1 material handling
 
@@ -498,7 +567,8 @@ the crew remains parked.
 │  amr_agent ×3       pure pursuit, scan safety, recovery      │
 │  franka_arm         joint waypoints and gripper commands     │
 │  humanoid_patrol    H1 velocity route and recovery           │
-│  fleet_monitor      console dashboard                        │
+│  fleet_monitor      console status                           │
+│  dashboard_server   HTTP API + browser operations dashboard  │
 │  RViz               paths, markers, scans (optional)         │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -554,6 +624,10 @@ warehouse_robotics_isaac/
 ├── ros2_ws/
 │   └── src/
 │       ├── warehouse_fleet/        # active warehouse autonomy package
+│       │   ├── warehouse_fleet/
+│       │   │   ├── dashboard_server.py   # HTTP API + ROS 2 bridge
+│       │   │   └── web/                  # dashboard HTML/CSS/JS
+│       │   └── ...
 │       └── lekIwi_*                # optional, unrelated LeKiwi packages
 └── ros2_ws/{build,install,log}/    # generated, not committed
 ```
@@ -584,8 +658,9 @@ time it is symlinked into the installed ROS package share.
 | `franka` | Base pose, cubes, tray, joint waypoints, sequence |
 | `humanoid` | Spawn, material-handling pickup/drop-off, speed |
 | `people` | Animated crew, routes, command file, agent settings, NavMesh |
-| `tasks` | Work queue and loop behaviour |
-| `fleet` | Grid resolution, inflation, dwell, traffic tuning |
+| `tasks` | Managed/fixed queue, inventory, capacities, supplier/shipping periods |
+| `fleet` | Grid resolution, inflation, dwell, traffic, task slots, teleop limits |
+| `dashboard` | Browser bind address, port, state period, event history |
 
 If you move a station, conveyor, pallet, rack, or robot spawn, update the YAML
 and rebuild/relaunch. Do not move only the visible NVIDIA mesh: the planner and
@@ -643,15 +718,21 @@ The default loop uses `inf` for repeated execution.
 | `/<ns>/path` | `nav_msgs/Path` | fleet manager → agent |
 | `/<ns>/hold` | `std_msgs/Bool` | fleet manager → agent |
 | `/<ns>/speed_scale` | `std_msgs/Float32` | fleet manager → agent |
+| `/<ns>/mode` | `std_msgs/String` | fleet manager → agent (`AUTO`, `TELEOP`, `STOPPED`) |
+| `/<ns>/teleop_cmd_vel` | `geometry_msgs/Twist` | dashboard/teleop → agent |
+| `/<ns>/load_state` | `geometry_msgs/Twist` | fleet manager → simulation (`linear.x` 0/1) |
 | `/<ns>/nav_status` | `std_msgs/String` (JSON) | agent → fleet manager |
 
 ### Fleet topics
 
 | Topic | Type | Purpose |
 |---|---|---|
-| `/fleet/status` | `std_msgs/String` (JSON) | Full fleet snapshot |
-| `/fleet/task_events` | `std_msgs/String` (JSON) | Assign, arrive, and complete events |
+| `/fleet/status` | `std_msgs/String` (JSON) | Full fleet snapshot, inventory, and tasks |
+| `/fleet/task_events` | `std_msgs/String` (JSON) | Assign, arrive, complete, and process events |
 | `/fleet/markers` | `visualization_msgs/MarkerArray` | RViz robot and label markers |
+| `/fleet/map` | `nav_msgs/OccupancyGrid` | Static YAML-derived occupancy grid |
+| `/fleet/mode` | `std_msgs/String` (JSON) | Global mode and teleop ownership |
+| `/fleet/control` | `std_msgs/String` (JSON) | Mode, teleop, cancel, and process commands |
 | `/fleet/submit_task` | `std_msgs/String` (JSON) | Add a task at runtime |
 
 ### Other topics
@@ -665,6 +746,9 @@ The default loop uses `inf` for repeated execution.
 | `/humanoid/odom` | `nav_msgs/Odometry` | simulation → autonomy |
 | `/humanoid/status` | `std_msgs/String` (JSON) | autonomy → observers |
 | `/ur10/joint_states` | `sensor_msgs/JointState` | simulation → observers |
+| `/ur10/status` | `std_msgs/String` (JSON) | simulation → dashboard/observers |
+| `/ur10/command` | `geometry_msgs/Twist` | dashboard → simulation (pause/resume/reset pulses) |
+| `/warehouse/process_status` | `std_msgs/String` (JSON) | simulation → dashboard (`ur10` + `conveyors`) |
 | `/forklift/odom` | `nav_msgs/Odometry` | simulation → observers |
 | `/tf` | `tf2_msgs/TFMessage` | simulation → autonomy/RViz |
 
@@ -724,16 +808,34 @@ ros2 run warehouse_fleet submit_task inbound outbound --priority 1
 ```
 
 Each invocation publishes one task to `/fleet/submit_task`. The fleet manager
-assigns it to the nearest eligible idle AMR.
+assigns it to the nearest eligible idle AMR. The dashboard's work-order form is
+an equivalent client; it posts to `/api/task` and publishes the same message.
+
+The dashboard control API is deliberately small and local:
+
+```text
+GET  /api/state     fleet, process, robot, event and map metadata
+GET  /api/map       occupancy grid as base64 int8 cells
+POST /api/task      {"pickup": "inbound", "dropoff": "staging"}
+POST /api/control   {"action": "set_mode", "mode": "PAUSED"}
+POST /api/control   {"action": "set_teleop", "robot": "amr2", "enabled": true}
+POST /api/control   {"action": "teleop", "robot": "amr2", "linear": 0.2, "angular": 0.0}
+POST /api/control   {"action": "process", "command": "reset_pallet"}
+```
 
 ### Teleoperate an AMR
 
-Stop the fleet manager first, otherwise it keeps publishing paths and hold
-commands.
+Use the **Manual drive** panel in the dashboard, or the terminal client:
 
 ```bash
 ros2 run warehouse_fleet teleop_amr --ros-args -p robot:=amr2
 ```
+
+The teleop client requests ownership through `/fleet/control`; the fleet
+manager cancels and requeues that robot's active task, then sends `TELEOP` on
+`/amr2/mode`. Commands travel on `/amr2/teleop_cmd_vel`, not `cmd_vel`, so the
+autonomy path and teleop cannot fight. The node stops automatically after
+`fleet.teleop_timeout` without a command (0.65 s by default).
 
 | Key | Action |
 |---|---|
@@ -741,14 +843,17 @@ ros2 run warehouse_fleet teleop_amr --ros-args -p robot:=amr2
 | `a` / `d` | Turn left / right |
 | `x` or space | Stop |
 | `+` / `-` | Increase / decrease speed |
-| `q` | Quit |
+| `q` | Quit and release teleop |
 
-Direct topic control also works:
+Direct teleop topic control is also possible while the robot is in teleop:
 
 ```bash
-ros2 topic pub -r 10 /amr1/cmd_vel geometry_msgs/msg/Twist \
+ros2 topic pub -r 10 /amr1/teleop_cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.3}, angular: {z: 0.0}}"
 ```
+
+Do not publish to `/amr1/cmd_vel` while autonomy is running; use the dashboard,
+`teleop_amr`, or `/fleet/control` to take ownership first.
 
 ### Inspect the live system
 
@@ -793,10 +898,23 @@ topics as present:
 /amr1/scan  /amr2/scan  /amr3/scan
 /tf
 /fleet/status
+/fleet/map
+/fleet/mode
+/fleet/control
 /franka/joint_states
 /humanoid/odom
 /ur10/joint_states
+/ur10/status
+/warehouse/process_status
 /forklift/odom
+```
+
+With the dashboard running, these should also answer:
+
+```bash
+curl -s http://127.0.0.1:8080/api/health
+curl -s http://127.0.0.1:8080/api/state | head -c 500
+curl -s http://127.0.0.1:8080/api/map | head -c 200
 ```
 
 ### Known-good headless run
@@ -1047,7 +1165,16 @@ processes.
   other moving equipment.
 - **AMR transport is logical.** The fleet tracks pickup/drop-off state and the
   simulator shows a payload while an AMR is in transit; the payload is not a
-  separately scheduled physics object.
+  separately scheduled physics object. The fleet publishes that state on
+  `/<amr>/load_state` so the simulator payload and UR10 staging count agree.
+- **The map is deterministic, not SLAM.** The dashboard visualizes the
+  YAML-derived `fleet/map` occupancy grid and live robot poses. It is a mapping
+  and operations view, not a live SLAM/map-server pipeline.
+- **Teleoperation is arbitrated.** Enabling teleop takes ownership of one AMR:
+  its active task is cancelled and requeued, autonomy paths are cleared, and
+  commands are accepted only on `/<amr>/teleop_cmd_vel` with a dead-man
+  watchdog. The dashboard server has no authentication and binds to
+  `127.0.0.1` by default; only expose it on a trusted network.
 - **Grasping is simplified.** Franka and UR10 use controller/proximity-based
   attachment with visual payloads rather than force-controlled contact
   grasping. The UR10 motion is local to Isaac Sim and publishes joint states

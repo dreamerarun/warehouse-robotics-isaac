@@ -125,6 +125,35 @@ def _launch_setup(context, *args, **kwargs):
             )
         )
 
+    if flag("dashboard") and cfg.get("dashboard", {}).get("enabled", True):
+        dash = cfg.get("dashboard", {})
+        host = LaunchConfiguration("dashboard_host").perform(context).strip()
+        if not host:
+            host = str(dash.get("host", "127.0.0.1"))
+        port_arg = LaunchConfiguration("dashboard_port").perform(context).strip()
+        try:
+            port = int(port_arg) if port_arg else 0
+        except ValueError:
+            port = 0
+        if not port:
+            port = int(dash.get("port", 8080))
+        actions.append(
+            LogInfo(
+                msg=f"[warehouse] dashboard: http://{host}:{port}"
+            )
+        )
+        nodes.append(
+            Node(
+                package="warehouse_fleet",
+                executable="dashboard_server",
+                name="warehouse_dashboard",
+                output="screen",
+                parameters=[
+                    {"config": config, "host": host, "port": port}
+                ],
+            )
+        )
+
     if flag("rviz"):
         share = get_package_share_directory("warehouse_fleet")
         rviz_config = os.path.join(share, "rviz", "fleet.rviz")
@@ -160,6 +189,17 @@ def generate_launch_description():
         DeclareLaunchArgument("monitor", default_value="true"),
         DeclareLaunchArgument("markers", default_value="true"),
         DeclareLaunchArgument("rviz", default_value="false"),
+        DeclareLaunchArgument("dashboard", default_value="true"),
+        DeclareLaunchArgument(
+            "dashboard_host",
+            default_value="",
+            description="Dashboard bind address (default: config)",
+        ),
+        DeclareLaunchArgument(
+            "dashboard_port",
+            default_value="",
+            description="Dashboard HTTP port (default: config)",
+        ),
         DeclareLaunchArgument(
             "domain_id",
             default_value="",

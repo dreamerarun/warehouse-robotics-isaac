@@ -9,6 +9,8 @@ setup(
     name=package_name,
     version="1.0.0",
     packages=find_packages(exclude=["test"]),
+    package_data={"warehouse_fleet": ["web/*"]},
+    include_package_data=True,
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
@@ -19,6 +21,7 @@ setup(
             ["../../../config/warehouse.yaml"],
         ),
         (os.path.join("share", package_name, "rviz"), glob("rviz/*")),
+        (os.path.join("share", package_name, "web"), glob("warehouse_fleet/web/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -36,6 +39,7 @@ setup(
             "fleet_monitor = warehouse_fleet.fleet_monitor:main",
             "submit_task = warehouse_fleet.submit_task:main",
             "teleop_amr = warehouse_fleet.teleop_amr:main",
+            "dashboard_server = warehouse_fleet.dashboard_server:main",
         ],
     },
 )

@@ -26,9 +26,12 @@ The simulator never imports host ROS 2 Python; see warehouse_ros_env.py.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
+
+import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -334,6 +337,14 @@ def main():
                 bridge.add_joint_states(
                     "ur10", process.articulation_path, "ur10/joint_states"
                 )
+            # Logical payload state from the fleet manager / dashboard and
+            # the industrial-cell command channel.  The sim only uses these
+            # when a publisher is actually present.
+            for amr in amrs:
+                bridge.add_twist_input(
+                    "load_" + amr.name, f"{amr.name}/load_state"
+                )
+            bridge.add_twist_input("ur10_cmd", "ur10/command")
             print(f"[ros] bridge ready: {len(bridge.graphs)} action graphs", flush=True)
             if bridge.errors:
                 print("[ros] warnings: " + " | ".join(bridge.errors), flush=True)
@@ -346,6 +357,15 @@ def main():
     world.play()
     for _ in range(5):
         app.update()
+
+    if bridge.enabled and process is not None:
+        bridge.add_string_publisher("ur10_status", "ur10/status")
+        bridge.add_string_publisher(
+            "warehouse_process", "warehouse/process_status"
+        )
+        if bridge.errors:
+            print("[ros] telemetry warnings: " + " | ".join(bridge.errors),
+                  flush=True)
 
     # -- camera / HUD ----------------------------------------------------
     if not args.headless:
@@ -371,6 +391,10 @@ def main():
     t0_sim = world.current_time
     last_status = 0.0
     last_hud = 0.0
+    last_process_status = 0.0
+    load_last = {amr.name: None for amr in amrs}
+    load_seen = {amr.name: False for amr in amrs}
+    process_ros_ready = False
     stations_cfg = cfg["scene"]["stations"]
     parking_cfg = cfg["scene"].get("parking", [])
 
@@ -386,6 +410,36 @@ def main():
             if humanoid is not None and not args.no_ros:
                 cmd = bridge.twist(humanoid.name)
                 humanoid.set_command(float(cmd[0]), float(cmd[1]), float(cmd[5]))
+            if process is not None:
+                seen_cmd, cmd = bridge.input_twist("ur10_cmd")
+                if seen_cmd:
+                    process.apply_command(float(cmd[0]), float(cmd[1]))
+
+            # Logical payload transitions: show the tote only between the
+            # pickup and dropoff dwells, and count a real staging delivery
+            # when a loaded AMR unloads on the staging pad.
+            for amr in amrs:
+                seen, value = bridge.load_state(amr.name)
+                load_seen[amr.name] = seen
+                if not seen:
+                    continue
+                loaded = value > 0.5
+                if not process_ros_ready and process is not None:
+                    process_ros_ready = True
+                    process.set_ros_ready(True)
+                if (load_last[amr.name] is True and not loaded
+                        and process is not None):
+                    pos, _ = amr.pose()
+                    staging = next(
+                        (s for s in stations_cfg if s["name"] == "staging"),
+                        None,
+                    )
+                    if staging is not None and np.hypot(
+                        pos[0] - float(staging["x"]),
+                        pos[1] - float(staging["y"]),
+                    ) < 1.65:
+                        process.notify_delivery()
+                load_last[amr.name] = loaded
 
             # 2. Apply articulation targets, then step physics.
             if forklift is not None:
@@ -414,10 +468,41 @@ def main():
             if not args.headless:
                 for amr in amrs:
                     amr.update_visual(dt, stations_cfg, parking_cfg)
+                    if load_seen.get(amr.name):
+                        amr.set_payload_visible(
+                            bool(load_last.get(amr.name))
+                        )
 
             # 3. Render / execute OmniGraph publishers at the render rate.
             if step_count % render_steps == 0:
                 app.update()
+
+            now = time.time()
+            if (bridge.enabled and process is not None
+                    and now - last_process_status > 0.5):
+                last_process_status = now
+                ur10_status = process.status_dict()
+                belt_status = (
+                    belts.status_dict() if belts is not None else {
+                        "running": True,
+                        "speed": 0.16,
+                        "belts": len(cfg["scene"].get("conveyors", [])),
+                        "loads": 0,
+                        "render_only": bool(args.headless),
+                    }
+                )
+                bridge.publish_string(
+                    "ur10_status", json.dumps(ur10_status)
+                )
+                bridge.publish_string(
+                    "warehouse_process",
+                    json.dumps({
+                        "time": round(world.current_time, 3),
+                        "ur10": ur10_status,
+                        "conveyors": belt_status,
+                        "ros_ready": bool(process_ros_ready),
+                    }),
+                )
 
             # 4. Optional real-time pacing.
             if realtime:
@@ -426,7 +511,6 @@ def main():
                 if delay > 0:
                     time.sleep(min(delay, 0.05))
 
-            now = time.time()
             if now - last_status > 2.0:
                 last_status = now
                 _print_status(

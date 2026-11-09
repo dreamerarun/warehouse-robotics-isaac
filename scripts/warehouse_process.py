@@ -129,6 +129,7 @@ class ConveyorTotes:
         self.belts = []
         self.items = []
         self.speed = 0.16
+        self.running = True
 
     def create(self, layer):
         stage = get_current_stage()
@@ -166,8 +167,19 @@ class ConveyorTotes:
                 )
         return self
 
+    def set_running(self, running):
+        self.running = bool(running)
+
+    def status_dict(self):
+        return {
+            "running": bool(self.running),
+            "speed": round(float(self.speed), 3),
+            "belts": len(self.belts),
+            "loads": len(self.items),
+        }
+
     def update(self, dt, t):
-        if not self.items:
+        if not self.running or not self.items:
             return
         for item in self.items:
             x0, y, length = self.belts[item["belt"]]
@@ -215,6 +227,15 @@ class IndustrialCell:
         self.dwell = float(spec.get("dwell", 2.5))
         self.reset_delay = float(spec.get("reset_delay", 4.0))
         self.initial_height = float(spec.get("initial_height", 1.45))
+        self.stock_capacity = max(1, int(spec.get("stock_capacity", 4)))
+        self.stock = max(0, int(spec.get("initial_stock", 1)))
+        self.feed_period = max(1.0, float(spec.get("feed_period", 8.0)))
+        self.auto_feed = True
+        self.feed_t = 0.0
+        self.staging_deliveries = 0
+        self.pallets_shipped = 0
+        self.paused = False
+        self._last_command = (0.0, 0.0)
 
         self.manip = None
         self.ctrl = None
@@ -371,7 +392,63 @@ class IndustrialCell:
         self._start_pick()
 
     # -- state machine ----------------------------------------------------
+    def set_ros_ready(self, ready):
+        """When AMR load telemetry is live, wait for real staging deliveries.
+
+        Without the fleet (``--no-ros``) the cell falls back to a timed feed so
+        the visual demo still has totes to palletise.
+        """
+        self.auto_feed = not bool(ready)
+
+    def notify_delivery(self, count=1):
+        """An AMR has unloaded a tote at the staging infeed."""
+        self.stock = min(self.stock_capacity, self.stock + int(count))
+        self.staging_deliveries += int(count)
+        self._log_status(
+            f"staging delivery {self.staging_deliveries} "
+            f"(stock {self.stock}/{self.stock_capacity})"
+        )
+        if self.state == "waiting" and self.stock > 0:
+            self._start_pick()
+
+    def apply_command(self, linear_x, linear_y):
+        """Handle dashboard command pulses from ``/ur10/command``.
+
+        linear_x > 0 resumes, linear_x < 0 pauses, linear_y > 0 clears a full
+        output pallet.  Commands are edge-triggered so a held value does not
+        repeat the action.
+        """
+        command = (float(linear_x), float(linear_y))
+        if command == self._last_command:
+            return
+        self._last_command = command
+        if command[0] > 0.5:
+            self.paused = False
+            self._log_status("resumed")
+        elif command[0] < -0.5:
+            self.paused = True
+            self._log_status("paused")
+        if command[1] > 0.5 and self.manip is not None:
+            self._clear_stack()
+            self.attached = False
+            _set_visible(self.pick_tote_path, False)
+            self.state = "waiting"
+            self.state_t = 0.0
+            self.event = -1
+            if self.stock > 0:
+                self._start_pick()
+            self._log_status("output pallet cleared by operator")
+
     def _start_pick(self):
+        if self.stock <= 0:
+            self.state = "waiting"
+            self.state_t = 0.0
+            self.event = -1
+            self.attached = False
+            _set_visible(self.pick_tote_path, False)
+            self._log_status("waiting for staging tote")
+            return
+        self.stock -= 1
         self.state = "pick"
         self.state_t = 0.0
         self.event = -1
@@ -410,7 +487,20 @@ class IndustrialCell:
         """Run the pick-place controller before the physics step."""
         if not self.enabled or self.manip is None:
             return
+        if self.paused:
+            return
         self.state_t += dt
+        if self.state == "waiting":
+            if self.auto_feed:
+                self.feed_t += dt
+                if self.feed_t >= self.feed_period:
+                    self.feed_t = 0.0
+                    self.stock = min(self.stock_capacity, self.stock + 1)
+                    self.staging_deliveries += 1
+                    self._log_status("visual auto-feed to staging")
+            if self.stock > 0:
+                self._start_pick()
+            return
         if self.state == "pick":
             if self.ctrl.is_done():
                 self.state = "dwell"
@@ -464,6 +554,11 @@ class IndustrialCell:
             if self.state_t >= self.reset_delay:
                 self._clear_stack()
                 self.cycles += 1
+                self.pallets_shipped += 1
+                self._log_status(
+                    f"shipped pallet {self.pallets_shipped} "
+                    f"(lifetime {self.cycles} cycles)"
+                )
                 self._start_pick()
 
     def _release(self):
@@ -506,3 +601,21 @@ class IndustrialCell:
             f"{self.state} stack {len([u for u in self.output_used if u])}/"
             f"{self.stack_size} cycles {self.cycles}"
         )
+
+    def status_dict(self):
+        used = len([u for u in self.output_used if u])
+        return {
+            "enabled": bool(self.enabled),
+            "state": self.state,
+            "paused": bool(self.paused),
+            "stack": used,
+            "stack_size": self.stack_size,
+            "pallet_full": self.state == "full",
+            "pallets_shipped": int(self.pallets_shipped),
+            "cycles": int(self.cycles),
+            "staging_stock": int(self.stock),
+            "staging_capacity": int(self.stock_capacity),
+            "staging_deliveries": int(self.staging_deliveries),
+            "auto_feed": bool(self.auto_feed),
+            "last_status": self._last_status,
+        }

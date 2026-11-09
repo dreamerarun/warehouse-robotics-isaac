@@ -23,6 +23,7 @@ import tty
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from std_msgs.msg import String
 
 HELP = """
 Warehouse AMR teleop
@@ -36,11 +37,29 @@ class TeleopAmr(Node):
     def __init__(self):
         super().__init__("teleop_amr")
         self.declare_parameter("robot", "amr1")
+        self.declare_parameter("direct", False)
         self.name = str(self.get_parameter("robot").value).strip("/")
+        self.direct = bool(self.get_parameter("direct").value)
         self.speed = 0.45
         self.vx = 0.0
         self.wz = 0.0
-        self.pub = self.create_publisher(Twist, f"/{self.name}/cmd_vel", 10)
+        topic = f"/{self.name}/cmd_vel" if self.direct else (
+            f"/{self.name}/teleop_cmd_vel"
+        )
+        self.pub = self.create_publisher(Twist, topic, 10)
+        self.pub_control = self.create_publisher(String, "/fleet/control", 10)
+        self.active = False
+
+    def request_mode(self, enabled):
+        if self.direct:
+            return
+        msg = String()
+        msg.data = (
+            '{"action":"set_teleop","robot":"%s","enabled":%s}'
+            % (self.name, "true" if enabled else "false")
+        )
+        self.pub_control.publish(msg)
+        self.active = bool(enabled)
 
     def send(self):
         msg = Twist()
@@ -68,7 +87,11 @@ def main(args=None):
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     print(HELP)
-    print(f"publishing to /{node.name}/cmd_vel\n")
+    if node.direct:
+        print(f"publishing direct to /{node.name}/cmd_vel\n")
+    else:
+        print(f"requesting fleet teleop and publishing /{node.name}/teleop_cmd_vel\n")
+        node.request_mode(True)
 
     try:
         tty.setcbreak(fd)
@@ -109,6 +132,8 @@ def main(args=None):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         node.vx = node.wz = 0.0
         node.send()
+        if node.active:
+            node.request_mode(False)
         print("\nstopped")
         node.destroy_node()
         rclpy.shutdown()
